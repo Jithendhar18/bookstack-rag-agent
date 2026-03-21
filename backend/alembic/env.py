@@ -11,10 +11,15 @@ from alembic import context
 # Load all models so Alembic can detect them
 from app.db.session import Base
 from app.db import models  # noqa: F401
+from config import get_settings
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
+# Override sqlalchemy.url from application settings (not hardcoded alembic.ini)
+settings = get_settings()
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL_SYNC)
 
 target_metadata = Base.metadata
 

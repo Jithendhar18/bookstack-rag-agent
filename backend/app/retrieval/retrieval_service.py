@@ -1,43 +1,30 @@
-"""Retrieval service: hybrid search, cross-encoder reranking, and caching."""
+"""Retrieval service — backward-compatible wrapper for hybrid search and reranking.
+
+This module is kept for backward compatibility with existing code (e.g., tools).
+The main pipeline now uses the factory-provided retrievers and rerankers directly.
+"""
 
 import logging
 import time
-import asyncio
 from typing import List, Optional, Dict, Any
-from concurrent.futures import ThreadPoolExecutor
 
 from langsmith import traceable
-from sentence_transformers import CrossEncoder
 
 from app.embeddings.embedding_service import EmbeddingService
 from app.retrieval.vector_store import VectorStoreManager
+from app.providers.factory import get_reranker
 from config import get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-_executor = ThreadPoolExecutor(max_workers=4)
-
 
 class RetrievalService:
-    """Retrieve and rerank documents using hybrid search + cross-encoder."""
-
-    _reranker_model: Optional[CrossEncoder] = None
+    """Retrieve and rerank documents — uses factory-provided components."""
 
     def __init__(self):
         self.embedding_service = EmbeddingService()
         self.vector_store = VectorStoreManager()
-        self._ensure_reranker()
-
-    @classmethod
-    def _ensure_reranker(cls):
-        if cls._reranker_model is None:
-            logger.info(f"Loading cross-encoder reranker: {settings.RERANKER_MODEL}")
-            cls._reranker_model = CrossEncoder(
-                settings.RERANKER_MODEL,
-                device=settings.EMBEDDING_DEVICE,
-            )
-            logger.info("Cross-encoder reranker loaded")
 
     @traceable(name="dense_retrieval")
     def dense_retrieve(
@@ -79,11 +66,9 @@ class RetrievalService:
         """Hybrid retrieval: merge dense + sparse results with score normalization."""
         top_k = top_k or settings.TOP_K_RETRIEVAL
 
-        # Run both retrievals
         dense_results = self.dense_retrieve(query, top_k=top_k, tenant_id=tenant_id)
         keyword_results = self.keyword_retrieve(query, top_k=top_k, tenant_id=tenant_id)
 
-        # Merge and deduplicate
         merged = self._merge_results(
             dense_results,
             keyword_results,
@@ -91,11 +76,9 @@ class RetrievalService:
             sparse_weight=settings.BM25_WEIGHT,
         )
 
-        # Apply metadata filters
         if filters:
             merged = self._apply_filters(merged, filters)
 
-        # Apply similarity threshold
         merged = [r for r in merged if r["score"] >= settings.SIMILARITY_THRESHOLD]
 
         return merged[:top_k]
@@ -108,7 +91,7 @@ class RetrievalService:
         sparse_weight: float = 0.3,
     ) -> List[Dict[str, Any]]:
         """Reciprocal Rank Fusion (RRF) merge of dense and sparse results."""
-        k = 60  # RRF constant
+        k = 60
         scores: Dict[str, float] = {}
         docs: Dict[str, Dict[str, Any]] = {}
 
@@ -123,7 +106,6 @@ class RetrievalService:
             if doc_id not in docs:
                 docs[doc_id] = doc
 
-        # Normalize scores to 0-1
         if scores:
             max_score = max(scores.values())
             min_score = min(scores.values())
@@ -131,7 +113,6 @@ class RetrievalService:
             for doc_id in scores:
                 scores[doc_id] = (scores[doc_id] - min_score) / score_range
 
-        # Build sorted result list
         result = []
         for doc_id, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
             doc = docs[doc_id]
@@ -147,34 +128,10 @@ class RetrievalService:
         documents: List[Dict[str, Any]],
         top_k: int = None,
     ) -> List[Dict[str, Any]]:
-        """Rerank using cross-encoder model for precise relevance scoring."""
+        """Rerank using factory-provided reranker."""
         top_k = top_k or settings.TOP_K_RERANK
-
-        if not documents:
-            return []
-
-        start = time.time()
-
-        # Prepare pairs for cross-encoder
-        pairs = [[query, doc["text"]] for doc in documents]
-
-        # Score in batches
-        scores = self._reranker_model.predict(
-            pairs,
-            batch_size=settings.RERANKER_BATCH_SIZE,
-            show_progress_bar=False,
-        )
-
-        # Assign scores and sort
-        for doc, score in zip(documents, scores):
-            doc["rerank_score"] = float(score)
-
-        documents.sort(key=lambda x: x.get("rerank_score", 0), reverse=True)
-
-        latency = (time.time() - start) * 1000
-        logger.info(f"Reranking {len(documents)} docs took {latency:.1f}ms")
-
-        return documents[:top_k]
+        reranker = get_reranker()
+        return reranker.rerank(query=query, documents=documents, top_k=top_k)
 
     def _apply_filters(self, results: List[Dict[str, Any]], filters: dict) -> List[Dict[str, Any]]:
         """Filter results by metadata fields."""

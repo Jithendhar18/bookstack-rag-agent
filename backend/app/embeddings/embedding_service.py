@@ -1,11 +1,11 @@
-"""Embedding service with singleton model loading, batch support, and caching."""
+"""Embedding service — thin wrapper that delegates to the configured provider.
+
+This module maintains backward compatibility for code that imports EmbeddingService
+directly (e.g., the ingestion pipeline), while routing through the factory.
+"""
 
 import logging
-import hashlib
 from typing import List
-
-from cachetools import LRUCache
-from sentence_transformers import SentenceTransformer
 
 from config import get_settings
 
@@ -14,11 +14,9 @@ settings = get_settings()
 
 
 class EmbeddingService:
-    """Singleton-based embedding service using SentenceTransformers."""
+    """Singleton embedding service backed by the pluggable provider system."""
 
     _instance = None
-    _model = None
-    _cache: LRUCache = LRUCache(maxsize=10000)
 
     def __new__(cls):
         if cls._instance is None:
@@ -26,65 +24,19 @@ class EmbeddingService:
         return cls._instance
 
     def __init__(self):
-        if EmbeddingService._model is None:
-            logger.info(f"Loading embedding model: {settings.EMBEDDING_MODEL}")
-            EmbeddingService._model = SentenceTransformer(
-                settings.EMBEDDING_MODEL,
-                device=settings.EMBEDDING_DEVICE,
-            )
-            logger.info("Embedding model loaded")
-
-    @property
-    def model(self) -> SentenceTransformer:
-        return EmbeddingService._model
-
-    def _cache_key(self, text: str) -> str:
-        return hashlib.md5(text.encode("utf-8")).hexdigest()
+        if not hasattr(self, "_provider"):
+            from app.providers.factory import get_embedding
+            self._provider = get_embedding()
+            logger.info(f"EmbeddingService initialized via factory: {settings.EMBEDDING_PROVIDER}/{settings.EMBEDDING_MODEL}")
 
     def embed(self, text: str) -> List[float]:
         """Embed a single text, with caching."""
-        key = self._cache_key(text)
-        if key in self._cache:
-            return self._cache[key]
-
-        embedding = self.model.encode(
-            text,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        ).tolist()
-
-        self._cache[key] = embedding
-        return embedding
+        return self._provider.embed(text)
 
     def embed_batch(self, texts: List[str]) -> List[List[float]]:
-        """Embed a batch of texts. Uses cache for previously seen texts."""
-        results = [None] * len(texts)
-        uncached_indices = []
-        uncached_texts = []
-
-        for i, text in enumerate(texts):
-            key = self._cache_key(text)
-            if key in self._cache:
-                results[i] = self._cache[key]
-            else:
-                uncached_indices.append(i)
-                uncached_texts.append(text)
-
-        if uncached_texts:
-            embeddings = self.model.encode(
-                uncached_texts,
-                normalize_embeddings=True,
-                batch_size=settings.EMBEDDING_BATCH_SIZE,
-                show_progress_bar=False,
-            ).tolist()
-
-            for idx, emb, text in zip(uncached_indices, embeddings, uncached_texts):
-                key = self._cache_key(text)
-                self._cache[key] = emb
-                results[idx] = emb
-
-        return results
+        """Embed a batch of texts."""
+        return self._provider.embed_batch(texts)
 
     @property
     def dimension(self) -> int:
-        return settings.EMBEDDING_DIMENSION
+        return self._provider.dimension

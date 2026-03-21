@@ -1,14 +1,12 @@
-"""LangGraph agent graph definition and compilation — upgraded pipeline.
+"""LangGraph agent graph definition — modular, configurable pipeline.
 
-Flow:
-    Input → QueryRewrite → HybridRetriever → Reranker
-        → (Optional Tool Node) → ContextCompressor → LLMReasoning
-        → ResponseValidator → Response → END
+Flow (all optional steps respect their env toggle):
+    Input → [Guardrails] → [QueryRewrite] → Retriever → [Reranker]
+        → [ContextCompressor] → LLM → [ResponseValidator] → Response → END
 """
 
 import logging
 from typing import Dict, Any, Optional, AsyncIterator
-from uuid import UUID
 
 from langgraph.graph import StateGraph, END
 from langsmith import traceable
@@ -16,6 +14,7 @@ from langsmith import traceable
 from app.agents.state import AgentState
 from app.agents.nodes import AgentNodes
 from app.core.cache import get_cache
+from app.providers.factory import log_active_configuration
 
 from config import get_settings
 
@@ -27,7 +26,6 @@ def should_use_tools(state: AgentState) -> str:
     """Conditional edge: decide whether to route through tool node."""
     if state.get("error"):
         return "context_compressor"
-    # Future: inspect query or metadata for tool-requiring patterns
     return "context_compressor"
 
 
@@ -49,16 +47,11 @@ def is_blocked(state: AgentState) -> str:
 
 
 def build_agent_graph() -> StateGraph:
-    """Construct the upgraded LangGraph RAG agent workflow.
+    """Construct the configurable LangGraph RAG agent workflow.
 
-    Graph structure:
-        input → [is_blocked?]
-            → query_rewrite → hybrid_retriever → [has_documents?]
-                → reranker → [should_use_tools?]
-                    → tool → context_compressor
-                    → context_compressor
-                → context_compressor → llm_reasoning → response_validator → response → END
-            → response → END (blocked / no docs fallback)
+    All nodes use factory-provided components.
+    Toggle-disabled modules are handled internally by each node
+    (they pass through data unchanged).
     """
     nodes = AgentNodes()
 
@@ -67,7 +60,7 @@ def build_agent_graph() -> StateGraph:
     # Add all nodes
     graph.add_node("input", nodes.input_node)
     graph.add_node("query_rewrite", nodes.query_rewrite_node)
-    graph.add_node("hybrid_retriever", nodes.hybrid_retriever_node)
+    graph.add_node("retriever", nodes.retriever_node)
     graph.add_node("reranker", nodes.reranker_node)
     graph.add_node("tool", nodes.tool_node)
     graph.add_node("context_compressor", nodes.context_compressor_node)
@@ -85,17 +78,17 @@ def build_agent_graph() -> StateGraph:
         {"query_rewrite": "query_rewrite", "response": "response"},
     )
 
-    # query_rewrite → hybrid_retriever
-    graph.add_edge("query_rewrite", "hybrid_retriever")
+    # query_rewrite → retriever
+    graph.add_edge("query_rewrite", "retriever")
 
-    # hybrid_retriever → [has_documents?] → reranker or response
+    # retriever → [has_documents?] → reranker or response
     graph.add_conditional_edges(
-        "hybrid_retriever",
+        "retriever",
         has_documents,
         {"reranker": "reranker", "response": "response"},
     )
 
-    # reranker → [should_use_tools?] → context_compressor (or tool → context_compressor)
+    # reranker → [should_use_tools?] → context_compressor
     graph.add_conditional_edges(
         "reranker",
         should_use_tools,
@@ -128,9 +121,10 @@ def get_agent():
     """Get or create the compiled agent graph."""
     global _compiled_graph
     if _compiled_graph is None:
+        log_active_configuration()
         graph = build_agent_graph()
         _compiled_graph = graph.compile()
-        logger.info("LangGraph agent compiled successfully (v2 pipeline)")
+        logger.info("LangGraph agent compiled successfully (v3 modular pipeline)")
     return _compiled_graph
 
 

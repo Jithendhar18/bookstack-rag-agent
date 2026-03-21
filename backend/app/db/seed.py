@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import AsyncSessionLocal, init_db
 from app.db.models import Role, Permission, User, RoleName
 from app.auth.password import hash_password
+from config import get_settings
 
 
 ROLE_PERMISSIONS = {
@@ -69,11 +70,13 @@ async def seed_admin_user(db: AsyncSession):
     if admin_role is None:
         return
 
+    settings = get_settings()
+    admin_password = settings.ADMIN_DEFAULT_PASSWORD
     admin = User(
         id=uuid.uuid4(),
         email="admin@bookstack-rag.local",
         username="admin",
-        hashed_password=hash_password("admin1234"),
+        hashed_password=hash_password(admin_password),
         full_name="System Admin",
         is_active=True,
         tenant_id="default",

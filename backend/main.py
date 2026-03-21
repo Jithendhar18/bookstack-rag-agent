@@ -16,6 +16,7 @@ from app.core.middleware import RequestContextMiddleware
 from app.core.exceptions import generic_exception_handler
 from app.db.session import init_db
 from app.db.seed import run_seeds
+from app.providers.factory import log_active_configuration
 
 from app.api.health_routes import router as health_router
 from app.api.auth_routes import router as auth_router
@@ -36,6 +37,9 @@ async def lifespan(app: FastAPI):
     setup_logging("DEBUG" if settings.DEBUG else "INFO")
     setup_langsmith()
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
+
+    # Log active pipeline configuration
+    log_active_configuration()
 
     # Initialize database and seed
     await init_db()

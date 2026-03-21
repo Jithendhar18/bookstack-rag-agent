@@ -1,16 +1,19 @@
-"""LangGraph agent node implementations — upgraded pipeline."""
+"""LangGraph agent node implementations — modular, configurable pipeline.
+
+All pipeline components are loaded via factory functions and respect
+enable/disable toggles from the environment configuration.
+"""
 
 import logging
 import time
 from typing import Dict, Any, List
 
 import tiktoken
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langsmith import traceable
 
 from app.agents.state import AgentState
-from app.retrieval.retrieval_service import RetrievalService
+from app.providers.factory import get_llm, get_fallback_llm, get_reranker, get_retriever
 from app.core.guardrails import GuardrailsService
 from app.agents.tools import get_tool_registry
 from config import get_settings
@@ -45,43 +48,19 @@ User query: {query}
 
 Rewritten query:"""
 
-RESPONSE_VALIDATION_PROMPT = """You are a fact-checking assistant. Evaluate whether the given answer is factually grounded in the provided source documents.
-
-Answer: {answer}
-
-Source documents:
-{sources}
-
-Evaluate:
-1. Is the answer supported by the sources? (yes/partially/no)
-2. Are there any claims not found in the sources?
-3. Confidence score (0.0 to 1.0)
-
-Respond in this exact format:
-GROUNDED: yes/partially/no
-UNSUPPORTED_CLAIMS: <list or "none">
-CONFIDENCE: <0.0-1.0>"""
-
 
 class AgentNodes:
-    """Node implementations for the upgraded RAG agent graph."""
+    """Node implementations for the configurable RAG agent graph.
+
+    All components are injected via the factory pattern and can be
+    toggled on/off via environment variables without code changes.
+    """
 
     def __init__(self):
-        self.retrieval_service = RetrievalService()
         self.guardrails = GuardrailsService()
         self.tool_registry = get_tool_registry()
-        self.llm = ChatOpenAI(
-            model=settings.LLM_MODEL,
-            temperature=settings.LLM_TEMPERATURE,
-            max_tokens=settings.LLM_MAX_TOKENS,
-            api_key=settings.OPENAI_API_KEY,
-        )
-        self._fast_llm = ChatOpenAI(
-            model=settings.LLM_MODEL,
-            temperature=0.0,
-            max_tokens=256,
-            api_key=settings.OPENAI_API_KEY,
-        )
+
+        # Load tokenizer for context compression
         try:
             self._tokenizer = tiktoken.encoding_for_model(settings.LLM_MODEL)
         except Exception:
@@ -91,14 +70,15 @@ class AgentNodes:
 
     @traceable(name="input_node")
     def input_node(self, state: AgentState) -> Dict[str, Any]:
-        """Process, validate input, and check for prompt injection."""
+        """Process, validate input, and optionally check for prompt injection."""
         query = state["query"].strip()
         if not query:
             return {"error": "Empty query", "answer": "Please provide a question."}
 
-        # Guardrails: prompt injection check
+        # Guardrails: prompt injection check (skipped if GUARDRAILS_ENABLED=false)
         injection_check = self.guardrails.check_prompt_injection(query)
         if not injection_check["safe"]:
+            logger.warning(f"Query blocked by guardrails: {query[:80]}")
             return {
                 "error": "blocked",
                 "answer": injection_check["reason"],
@@ -107,80 +87,146 @@ class AgentNodes:
         return {
             "query": query,
             "messages": [HumanMessage(content=query)],
-            "metadata": {**state.get("metadata", {}), "start_time": time.time()},
+            "metadata": {
+                **state.get("metadata", {}),
+                "start_time": time.time(),
+                "pipeline_config": settings.get_active_modules(),
+            },
         }
 
     # ─── Query Rewrite Node ─────────────────────────────────────────────
 
     @traceable(name="query_rewrite_node")
     def query_rewrite_node(self, state: AgentState) -> Dict[str, Any]:
-        """Rewrite user query for better retrieval."""
+        """Rewrite user query for better retrieval.
+
+        Skipped when QUERY_REWRITER_ENABLED=false — passes query through unchanged.
+        """
         if state.get("error"):
             return {}
 
         query = state["query"]
 
-        prompt = QUERY_REWRITE_PROMPT.format(query=query)
-        response = self._fast_llm.invoke([HumanMessage(content=prompt)])
-        rewritten = response.content.strip()
+        # Toggle check: skip rewriting if disabled
+        if not settings.QUERY_REWRITER_ENABLED:
+            logger.info("Query rewriter: DISABLED (passing through original query)")
+            return {
+                "rewritten_query": query,
+                "metadata": {
+                    **state.get("metadata", {}),
+                    "query_rewriter_skipped": True,
+                },
+            }
 
-        # Fallback to original if rewrite is empty or too different
-        if not rewritten or len(rewritten) > len(query) * 5:
-            rewritten = query
+        try:
+            llm = get_llm()
+            prompt = QUERY_REWRITE_PROMPT.format(query=query)
+            messages = [{"role": "user", "content": prompt}]
 
-        logger.info(f"Query rewritten: '{query[:50]}' → '{rewritten[:50]}'")
-        return {
-            "rewritten_query": rewritten,
-            "metadata": {
-                **state.get("metadata", {}),
-                "original_query": query,
+            import asyncio
+            # Handle both sync and async contexts
+            try:
+                loop = asyncio.get_running_loop()
+                # We're in an async context but this node is called synchronously by LangGraph
+                # Use the underlying langchain client for sync invocation
+                lc_client = llm.langchain_client
+                response = lc_client.invoke([HumanMessage(content=prompt)])
+                rewritten = response.content.strip()
+            except RuntimeError:
+                rewritten = query
+
+            # Fallback to original if rewrite is empty or too different
+            if not rewritten or len(rewritten) > len(query) * 5:
+                rewritten = query
+
+            logger.info(f"Query rewritten: '{query[:50]}' → '{rewritten[:50]}'")
+            return {
                 "rewritten_query": rewritten,
-            },
-        }
+                "metadata": {
+                    **state.get("metadata", {}),
+                    "original_query": query,
+                    "rewritten_query": rewritten,
+                },
+            }
+        except Exception as e:
+            logger.warning(f"Query rewrite failed, using original: {e}")
+            return {
+                "rewritten_query": query,
+                "metadata": {**state.get("metadata", {}), "query_rewriter_error": str(e)},
+            }
 
-    # ─── Hybrid Retriever Node ───────────────────────────────────────────
+    # ─── Retriever Node ──────────────────────────────────────────────────
 
-    @traceable(name="hybrid_retriever_node")
-    def hybrid_retriever_node(self, state: AgentState) -> Dict[str, Any]:
-        """Retrieve relevant documents using hybrid search (dense + sparse)."""
+    @traceable(name="retriever_node")
+    def retriever_node(self, state: AgentState) -> Dict[str, Any]:
+        """Retrieve relevant documents using the configured retrieval strategy.
+
+        Strategy is set via RETRIEVAL_MODE: dense | hybrid | keyword.
+        """
         if state.get("error"):
             return {}
 
-        # Use rewritten query if available, else original
         search_query = state.get("rewritten_query") or state["query"]
         tenant_id = state.get("tenant_id", "default")
 
-        results = self.retrieval_service.hybrid_retrieve(
-            query=search_query,
-            top_k=settings.TOP_K_RETRIEVAL,
-            tenant_id=tenant_id,
-        )
-
-        logger.info(f"Hybrid retrieval returned {len(results)} documents")
-        return {"retrieved_documents": results}
+        try:
+            retriever = get_retriever()
+            results = retriever.retrieve(
+                query=search_query,
+                top_k=settings.TOP_K_RETRIEVAL,
+                tenant_id=tenant_id,
+            )
+            logger.info(f"Retrieval ({settings.RETRIEVAL_MODE}) returned {len(results)} documents")
+            return {"retrieved_documents": results}
+        except Exception as e:
+            logger.error(f"Retrieval failed: {e}")
+            return {"retrieved_documents": [], "error": f"Retrieval failed: {e}"}
 
     # ─── Reranker Node ───────────────────────────────────────────────────
 
     @traceable(name="reranker_node")
     def reranker_node(self, state: AgentState) -> Dict[str, Any]:
-        """Rerank retrieved documents with cross-encoder."""
+        """Rerank retrieved documents.
+
+        Skipped when RERANKER_ENABLED=false — passes documents through unchanged.
+        Fails gracefully — continues with unreranked documents on error.
+        """
         if state.get("error"):
             return {}
 
         documents = state.get("retrieved_documents", [])
         if not documents:
-            return {"reranked_documents": [], "error": "No documents found for this query."}
+            return {"reranked_documents": []}
 
         search_query = state.get("rewritten_query") or state["query"]
 
-        reranked = self.retrieval_service.rerank(
-            query=search_query,
-            documents=documents,
-            top_k=settings.TOP_K_RERANK,
-        )
-
-        logger.info(f"Reranked to {len(reranked)} documents")
-        return {"reranked_documents": reranked}
+        try:
+            reranker = get_reranker()
+            reranked = reranker.rerank(
+                query=search_query,
+                documents=documents,
+                top_k=settings.TOP_K_RERANK,
+            )
+            skipped = not settings.RERANKER_ENABLED
+            logger.info(f"Reranker: {'SKIPPED' if skipped else f'{len(reranked)} docs'}")
+            return {
+                "reranked_documents": reranked,
+                "metadata": {
+                    **state.get("metadata", {}),
+                    "reranker_skipped": skipped,
+                },
+            }
+        except Exception as e:
+            # Failsafe: continue without reranking
+            logger.warning(f"Reranker failed, continuing with unreranked docs: {e}")
+            return {
+                "reranked_documents": documents[:settings.TOP_K_RERANK],
+                "metadata": {
+                    **state.get("metadata", {}),
+                    "reranker_error": str(e),
+                    "reranker_skipped": True,
+                },
+            }
 
     # ─── Tool Node ───────────────────────────────────────────────────────
 
@@ -193,13 +239,27 @@ class AgentNodes:
 
     @traceable(name="context_compressor_node")
     def context_compressor_node(self, state: AgentState) -> Dict[str, Any]:
-        """Compress context: remove redundancy, enforce token limits (MMR)."""
+        """Compress context: remove redundancy, enforce token limits (MMR).
+
+        Skipped when CONTEXT_COMPRESSION_ENABLED=false — passes documents through.
+        """
         if state.get("error"):
             return {}
 
         documents = state.get("reranked_documents", [])
         if not documents:
             return {"compressed_documents": []}
+
+        # Toggle check: skip compression if disabled
+        if not settings.CONTEXT_COMPRESSION_ENABLED:
+            logger.info("Context compression: DISABLED (passing through all documents)")
+            return {
+                "compressed_documents": documents,
+                "metadata": {
+                    **state.get("metadata", {}),
+                    "compression_skipped": True,
+                },
+            }
 
         # Step 1: Remove near-duplicate chunks
         unique_docs = self._deduplicate_chunks(documents)
@@ -219,7 +279,6 @@ class AgentNodes:
         unique = []
         for doc in documents:
             text = doc.get("text", "")
-            # Simple content fingerprint: first 200 chars normalized
             fingerprint = text[:200].lower().strip()
             if fingerprint not in seen_hashes:
                 seen_hashes.add(fingerprint)
@@ -239,10 +298,8 @@ class AgentNodes:
             best_idx = 0
 
             for i, candidate in enumerate(remaining):
-                # Relevance score from reranking
                 relevance = candidate.get("rerank_score", candidate.get("score", 0))
 
-                # Max similarity to already-selected docs (simple text overlap)
                 max_sim = 0
                 cand_words = set(candidate.get("text", "").lower().split())
                 for sel in selected:
@@ -251,7 +308,6 @@ class AgentNodes:
                         overlap = len(cand_words & sel_words) / max(len(cand_words | sel_words), 1)
                         max_sim = max(max_sim, overlap)
 
-                # MMR score
                 mmr = settings.MMR_LAMBDA * relevance - (1 - settings.MMR_LAMBDA) * max_sim
 
                 if mmr > best_score:
@@ -270,7 +326,6 @@ class AgentNodes:
             text = doc.get("text", "")
             tokens = len(self._tokenizer.encode(text))
             if total_tokens + tokens > max_tokens:
-                # Truncate last document to fit
                 remaining = max_tokens - total_tokens
                 if remaining > 50:
                     truncated_text = self._tokenizer.decode(
@@ -287,11 +342,13 @@ class AgentNodes:
 
     @traceable(name="llm_reasoning_node")
     def llm_reasoning_node(self, state: AgentState) -> Dict[str, Any]:
-        """Generate answer using LLM with compressed context."""
+        """Generate answer using the configured LLM provider.
+
+        Includes automatic fallback to LLM_FALLBACK_PROVIDER on failure.
+        """
         if state.get("error"):
             return {"answer": state["error"], "sources": []}
 
-        # Use compressed docs if available, else reranked
         documents = state.get("compressed_documents") or state.get("reranked_documents", [])
 
         # Build context from documents
@@ -312,9 +369,42 @@ class AgentNodes:
         context = "\n\n---\n\n".join(context_parts) if context_parts else "No relevant documents found."
 
         system_msg = SystemMessage(content=SYSTEM_PROMPT.format(context=context))
-        human_msg = HumanMessage(content=state["query"])
 
-        response = self.llm.invoke([system_msg] + state.get("messages", []))
+        # Try primary LLM
+        llm = get_llm()
+        try:
+            response = llm.langchain_client.invoke([system_msg] + state.get("messages", []))
+            provider_used = llm.model_name
+        except Exception as primary_err:
+            logger.error(f"Primary LLM failed ({llm.model_name}): {primary_err}")
+
+            # Try fallback LLM
+            fallback = get_fallback_llm()
+            if fallback:
+                try:
+                    logger.info(f"Attempting fallback LLM: {fallback.model_name}")
+                    response = fallback.langchain_client.invoke([system_msg] + state.get("messages", []))
+                    provider_used = f"{fallback.model_name} (fallback)"
+                except Exception as fallback_err:
+                    logger.error(f"Fallback LLM also failed: {fallback_err}")
+                    return {
+                        "answer": "I'm temporarily unable to generate a response. Please try again later.",
+                        "sources": sources,
+                        "metadata": {
+                            **state.get("metadata", {}),
+                            "llm_error": str(primary_err),
+                            "fallback_error": str(fallback_err),
+                        },
+                    }
+            else:
+                return {
+                    "answer": "I'm temporarily unable to generate a response. Please try again later.",
+                    "sources": sources,
+                    "metadata": {
+                        **state.get("metadata", {}),
+                        "llm_error": str(primary_err),
+                    },
+                }
 
         return {
             "answer": response.content,
@@ -324,6 +414,7 @@ class AgentNodes:
                 **state.get("metadata", {}),
                 "end_time": time.time(),
                 "documents_used": len(documents),
+                "llm_provider": provider_used,
             },
         }
 
@@ -331,9 +422,19 @@ class AgentNodes:
 
     @traceable(name="response_validator_node")
     def response_validator_node(self, state: AgentState) -> Dict[str, Any]:
-        """Validate response grounding and factual accuracy."""
+        """Validate response grounding and factual accuracy.
+
+        Skipped when GUARDRAILS_ENABLED=false.
+        """
         if state.get("error"):
             return {}
+
+        # Skip validation if guardrails disabled
+        if not settings.GUARDRAILS_ENABLED:
+            return {
+                "validation_result": {"grounded": True, "confidence": 1.0, "reason": None},
+                "metadata": {**state.get("metadata", {}), "guardrails_skipped": True},
+            }
 
         answer = state.get("answer", "")
         sources = state.get("sources", [])
@@ -350,7 +451,6 @@ class AgentNodes:
         grounding = self.guardrails.validate_output_grounding(answer, sources)
 
         if not grounding["grounded"]:
-            # Attempt retry with stricter prompt
             logger.warning(f"Response failed grounding check: {grounding['reason']}")
             fallback = self.guardrails.build_fallback_response(grounding["reason"])
             return {
@@ -375,6 +475,16 @@ class AgentNodes:
         start_time = metadata.get("start_time", time.time())
         latency = (time.time() - start_time) * 1000
 
+        # Build summary of which modules were active/skipped
+        modules_summary = {
+            "query_rewriter": "skipped" if metadata.get("query_rewriter_skipped") else "active",
+            "retrieval_mode": settings.RETRIEVAL_MODE,
+            "reranker": "skipped" if metadata.get("reranker_skipped") else "active",
+            "compression": "skipped" if metadata.get("compression_skipped") else "active",
+            "guardrails": "skipped" if metadata.get("guardrails_skipped") else "active",
+            "llm_provider": metadata.get("llm_provider", settings.LLM_PROVIDER),
+        }
+
         return {
             "metadata": {
                 **metadata,
@@ -382,5 +492,6 @@ class AgentNodes:
                 "total_sources": len(state.get("sources", [])),
                 "query_rewritten": bool(state.get("rewritten_query")),
                 "validation": state.get("validation_result"),
+                "modules": modules_summary,
             }
         }
