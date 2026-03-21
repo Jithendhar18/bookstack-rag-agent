@@ -42,7 +42,23 @@ async def lifespan(app: FastAPI):
     await run_seeds()
     logger.info("Database initialized and seeded")
 
+    # Initialize Redis cache
+    from app.core.cache import get_cache
+    try:
+        cache = await get_cache()
+        logger.info("Redis cache connected")
+    except Exception as e:
+        logger.warning(f"Redis cache unavailable: {e}")
+
     yield
+
+    # Shutdown: close Redis
+    try:
+        from app.core.cache import _cache
+        if _cache:
+            await _cache.close()
+    except Exception:
+        pass
 
     logger.info("Shutting down")
 

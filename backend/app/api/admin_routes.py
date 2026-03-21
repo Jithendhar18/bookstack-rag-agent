@@ -16,6 +16,7 @@ from app.db.models import (
 from app.auth.dependencies import require_roles, CurrentUser
 from app.auth.password import hash_password
 from app.schemas.schemas import SystemMetrics, UserResponse, UserUpdateRequest
+from app.core.evaluation import EvaluationRunner
 
 logger = logging.getLogger(__name__)
 
@@ -160,3 +161,27 @@ async def update_user(
         tenant_id=user.tenant_id,
         created_at=user.created_at,
     )
+
+
+@router.post("/evaluate")
+async def run_evaluation(
+    current_user: CurrentUser = Depends(require_roles(["admin"])),
+):
+    """Run the RAG evaluation suite. Admin only."""
+    runner = EvaluationRunner(tenant_id=current_user.tenant_id)
+    summary = await runner.run_evaluation()
+    return runner.to_dict(summary)
+
+
+@router.get("/cache/health")
+async def cache_health(
+    current_user: CurrentUser = Depends(require_roles(["admin"])),
+):
+    """Check Redis cache health."""
+    from app.core.cache import get_cache
+    try:
+        cache = await get_cache()
+        healthy = await cache.health_check()
+        return {"status": "ok" if healthy else "unhealthy"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}

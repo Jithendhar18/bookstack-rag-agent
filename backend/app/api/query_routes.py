@@ -1,21 +1,26 @@
-"""Query API routes — uses LangGraph agent."""
+"""Query API routes — uses LangGraph agent with streaming support."""
 
+import json
 import uuid
 import time
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.db.models import ChatSession, ChatMessage, AuditLog, AuditAction
 from app.auth.dependencies import get_current_user, CurrentUser
-from app.agents.graph import run_agent_query
+from app.agents.graph import run_agent_query, stream_agent_query
 from app.schemas.schemas import QueryRequest, QueryResponse, SourceDocument
 
+from config import get_settings
+
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 router = APIRouter(prefix="/query", tags=["Query"])
 
@@ -105,4 +110,48 @@ async def query(
         session_id=session_id,
         trace_id=result.get("metadata", {}).get("trace_id"),
         latency_ms=latency_ms,
+    )
+
+
+@router.post("/stream")
+async def query_stream(
+    request: QueryRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Stream query results via SSE (Server-Sent Events)."""
+    if not settings.STREAMING_ENABLED:
+        raise HTTPException(status_code=400, detail="Streaming is disabled")
+
+    async def event_generator():
+        try:
+            async for event in stream_agent_query(
+                query=request.query,
+                tenant_id=current_user.tenant_id,
+                session_id=str(request.session_id) if request.session_id else None,
+            ):
+                node = event.get("node", "unknown")
+                data = event.get("data", {})
+
+                # Yield progress events for each node
+                payload = {
+                    "node": node,
+                    "answer": data.get("answer", ""),
+                    "sources": data.get("sources", []),
+                    "metadata": data.get("metadata", {}),
+                }
+                yield f"data: {json.dumps(payload, default=str)}\n\n"
+
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            logger.error(f"Streaming error: {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )

@@ -61,7 +61,7 @@ class UserUpdateRequest(BaseModel):
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
     session_id: Optional[UUID] = None
-    top_k: int = Field(default=5, ge=1, le=20)
+    top_k: int = Field(default=5, ge=1, le=50)
     filters: Optional[dict[str, Any]] = None
 
 
@@ -94,6 +94,13 @@ class IngestResponse(BaseModel):
     status: str
     documents_queued: int
     message: str
+
+
+class IngestionStatusResponse(BaseModel):
+    task_id: str
+    status: str
+    progress: Optional[str] = None
+    result: Optional[dict] = None
 
 
 class DocumentResponse(BaseModel):
@@ -147,3 +154,21 @@ class PaginatedResponse(BaseModel):
     page: int
     page_size: int
     pages: int
+
+
+# ─── Evaluation ──────────────────────────────────────────────────────────────
+
+class EvalQuerySchema(BaseModel):
+    query: str
+    expected_answer: Optional[str] = None
+    expected_sources: Optional[List[str]] = None
+
+
+class EvalResultSchema(BaseModel):
+    query: str
+    answer: str
+    expected_answer: Optional[str] = None
+    sources_count: int
+    latency_ms: float
+    grounding_confidence: Optional[float] = None
+    passed: bool

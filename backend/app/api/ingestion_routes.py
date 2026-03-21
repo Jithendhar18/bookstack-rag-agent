@@ -1,52 +1,42 @@
-"""Ingestion API routes."""
+"""Ingestion API routes — Celery-based queue system."""
 
 import uuid
 import logging
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.db.models import Document, Chunk, AuditLog, AuditAction
 from app.auth.dependencies import require_roles, CurrentUser
-from app.ingestion.pipeline import IngestionPipeline
-from app.schemas.schemas import IngestRequest, IngestResponse, DocumentResponse
+from app.ingestion.tasks import ingest_pages_task
+from app.ingestion.celery_app import celery_app
+from app.schemas.schemas import IngestRequest, IngestResponse, DocumentResponse, IngestionStatusResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ingestion", tags=["Ingestion"])
 
 
-async def _run_ingestion(
-    db_session_factory,
-    tenant_id: str,
-    page_ids: list[int] | None,
-    force_reindex: bool,
-    task_id: str,
-):
-    """Background task for ingestion."""
-    from app.db.session import AsyncSessionLocal
-    async with AsyncSessionLocal() as db:
-        pipeline = IngestionPipeline(db)
-        stats = await pipeline.ingest_pages(
-            tenant_id=tenant_id,
-            page_ids=page_ids,
-            force_reindex=force_reindex,
-        )
-        logger.info(f"Ingestion task {task_id} completed: {stats}")
-
-
 @router.post("/ingest", response_model=IngestResponse)
 async def ingest(
     request: IngestRequest,
-    background_tasks: BackgroundTasks,
     current_user: CurrentUser = Depends(require_roles(["admin", "developer"])),
     db: AsyncSession = Depends(get_db),
 ):
-    """Trigger ingestion from BookStack. Requires admin or developer role."""
-    task_id = str(uuid.uuid4())
+    """Trigger ingestion from BookStack via Celery queue. Requires admin or developer role."""
+    # Send to Celery queue
+    task = ingest_pages_task.apply_async(
+        kwargs={
+            "tenant_id": current_user.tenant_id,
+            "page_ids": request.bookstack_ids,
+            "force_reindex": request.force_reindex,
+        }
+    )
+
+    task_id = task.id
 
     # Audit log
     db.add(AuditLog(
@@ -60,20 +50,31 @@ async def ingest(
     ))
     await db.commit()
 
-    background_tasks.add_task(
-        _run_ingestion,
-        None,
-        current_user.tenant_id,
-        request.bookstack_ids,
-        request.force_reindex,
-        task_id,
-    )
-
     return IngestResponse(
         task_id=task_id,
         status="queued",
         documents_queued=len(request.bookstack_ids) if request.bookstack_ids else -1,
-        message="Ingestion started in background",
+        message="Ingestion task queued via Celery",
+    )
+
+
+@router.get("/status/{task_id}", response_model=IngestionStatusResponse)
+async def get_ingestion_status(
+    task_id: str,
+    current_user: CurrentUser = Depends(require_roles(["admin", "developer"])),
+):
+    """Check status of an ingestion task."""
+    result = celery_app.AsyncResult(task_id)
+
+    info = {}
+    if result.info and isinstance(result.info, dict):
+        info = result.info
+
+    return IngestionStatusResponse(
+        task_id=task_id,
+        status=result.state,
+        progress=info.get("status", None),
+        result=info if result.ready() else None,
     )
 
 

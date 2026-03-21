@@ -25,22 +25,68 @@ services:
       timeout: 5s
       retries: 5
 
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:6333/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   backend:
     build:
       context: ./backend
       dockerfile: ../docker/Dockerfile
     ports:
-      - "8000:8000"
+      - "8001:8000"
     env_file:
       - ./backend/.env
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/bookstack_rag
       DATABASE_URL_SYNC: postgresql://postgres:postgres@db:5432/bookstack_rag
       REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      VECTOR_STORE_TYPE: qdrant
     depends_on:
       db:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    volumes:
+      - faiss_data:/app/data
+
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: ../docker/Dockerfile
+    command: celery -A app.ingestion.celery_app:celery_app worker --loglevel=info --concurrency=2
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/bookstack_rag
+      DATABASE_URL_SYNC: postgresql://postgres:postgres@db:5432/bookstack_rag
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      VECTOR_STORE_TYPE: qdrant
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
     volumes:
       - faiss_data:/app/data
@@ -48,3 +94,4 @@ services:
 volumes:
   pgdata:
   faiss_data:
+  qdrant_data:

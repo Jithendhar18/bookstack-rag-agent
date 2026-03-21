@@ -10,7 +10,7 @@ class Settings(BaseSettings):
 
     # App
     APP_NAME: str = "BookStack RAG Agent"
-    APP_VERSION: str = "1.0.0"
+    APP_VERSION: str = "2.0.0"
     DEBUG: bool = False
     ENVIRONMENT: str = "development"
 
@@ -40,8 +40,14 @@ class Settings(BaseSettings):
     EMBEDDING_DEVICE: str = "cpu"
 
     # Vector store
-    VECTOR_STORE_TYPE: str = "faiss"  # "faiss" or "pgvector"
+    VECTOR_STORE_TYPE: str = "qdrant"  # "faiss", "pgvector", or "qdrant"
     FAISS_INDEX_PATH: str = "./data/faiss_index"
+
+    # Qdrant
+    QDRANT_HOST: str = "localhost"
+    QDRANT_PORT: int = 6333
+    QDRANT_COLLECTION: str = "bookstack_chunks"
+    QDRANT_API_KEY: str = ""
 
     # Chunking
     CHUNK_SIZE: int = 512
@@ -68,9 +74,36 @@ class Settings(BaseSettings):
     RATE_LIMIT_PER_MINUTE: int = 60
 
     # Retrieval
-    TOP_K_RETRIEVAL: int = 10
+    TOP_K_RETRIEVAL: int = 20
     TOP_K_RERANK: int = 5
     SIMILARITY_THRESHOLD: float = 0.3
+    BM25_WEIGHT: float = 0.3
+    DENSE_WEIGHT: float = 0.7
+
+    # Reranker
+    RERANKER_MODEL: str = "BAAI/bge-reranker-large"
+    RERANKER_BATCH_SIZE: int = 16
+
+    # Caching
+    CACHE_QUERY_TTL: int = 600  # 10 minutes
+    CACHE_RETRIEVAL_TTL: int = 300  # 5 minutes
+    CACHE_ENABLED: bool = True
+
+    # Celery
+    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
+
+    # Guardrails
+    GUARDRAILS_ENABLED: bool = True
+    MIN_SUPPORTING_CHUNKS: int = 1
+    HALLUCINATION_THRESHOLD: float = 0.5
+
+    # Streaming
+    STREAMING_ENABLED: bool = True
+
+    # Context compression
+    MAX_CONTEXT_TOKENS: int = 4096
+    MMR_LAMBDA: float = 0.7
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
