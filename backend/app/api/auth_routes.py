@@ -12,7 +12,7 @@ from app.db.models import User, Role, RoleName, AuditLog, AuditAction
 from app.auth.password import hash_password, verify_password
 from app.auth.jwt_handler import create_access_token, create_refresh_token, decode_token
 from app.auth.dependencies import get_current_user, CurrentUser
-from app.schemas.schemas import LoginRequest, RegisterRequest, TokenResponse, UserResponse
+from app.schemas.schemas import LoginRequest, RegisterRequest, RefreshTokenRequest, TokenResponse, UserResponse
 from config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -110,11 +110,11 @@ async def register(
 
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh_token(
-    refresh_token: str,
+    request: RefreshTokenRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """Get new access token using refresh token."""
-    payload = decode_token(refresh_token)
+    payload = decode_token(request.refresh_token)
     if payload is None or payload.get("type") != "refresh":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
 

@@ -23,11 +23,15 @@ class LoginRequest(BaseModel):
 
 
 class RegisterRequest(BaseModel):
-    email: str = Field(..., max_length=255)  # validated via regex or custom
+    email: EmailStr = Field(..., max_length=255)
     username: str = Field(..., min_length=3, max_length=100)
     password: str = Field(..., min_length=8, max_length=128)
     full_name: Optional[str] = Field(None, max_length=255)
     tenant_id: str = Field(default="default", max_length=100)
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
 
 
 class TokenResponse(BaseModel):

@@ -212,6 +212,9 @@ bookstack-rag-agent/
 │   │   └── schemas/          # Pydantic request/response models
 │   │       └── schemas.py
 │   ├── alembic/              # Database migrations
+│   │   ├── versions/         # Migration scripts
+│   │   ├── env.py
+│   │   └── script.py.mako
 │   ├── main.py               # FastAPI app entrypoint
 │   ├── config.py             # Settings from .env
 │   └── requirements.txt
@@ -247,8 +250,8 @@ cp backend/.env.example backend/.env
 # 3. Start all services (PostgreSQL, Redis, Qdrant, API, Celery worker)
 docker-compose up -d
 
-# 4. The API is now running at http://localhost:8000
-# Swagger docs at http://localhost:8000/docs
+# 4. The API is now running at http://localhost:8001
+# Swagger docs at http://localhost:8001/docs
 # Qdrant dashboard at http://localhost:6333/dashboard
 ```
 
@@ -289,6 +292,21 @@ celery -A app.ingestion.celery_app:celery_app worker --loglevel=info
 python scripts/run_ingestion.py
 ```
 
+### Database Migrations
+
+```bash
+cd backend
+
+# Generate a new migration after model changes
+alembic revision --autogenerate -m "description of changes"
+
+# Apply all pending migrations
+alembic upgrade head
+
+# Roll back one revision
+alembic downgrade -1
+```
+
 ## API Reference
 
 ### Authentication
@@ -298,6 +316,13 @@ python scripts/run_ingestion.py
 | POST | `/api/v1/auth/login` | Login, get JWT tokens | No |
 | POST | `/api/v1/auth/register` | Register new user | No |
 | POST | `/api/v1/auth/refresh` | Refresh access token | No |
+
+**Refresh token request** (body, not query param):
+```json
+{
+  "refresh_token": "eyJhbGciOiJIUzI1NiIs..."
+}
+```
 | GET | `/api/v1/auth/me` | Get current user | Yes |
 
 ### Query (RAG Agent)
@@ -529,12 +554,16 @@ View traces at https://smith.langchain.com
 
 ### Tech Stack (Frontend)
 
-- **Framework**: React 18+ with TypeScript
-- **State**: Zustand or TanStack Query
-- **UI**: Tailwind CSS + shadcn/ui
-- **Routing**: React Router v6
-- **Streaming**: Server-Sent Events (SSE) or WebSocket
-- **Auth**: JWT stored in httpOnly cookies
+- **Framework**: React 18+ with TypeScript (strict mode)
+- **State**: TanStack Query v5 (server state) + React Context (UI state)
+- **UI**: Tailwind CSS + shadcn/ui + Lucide icons
+- **Routing**: React Router v6 with lazy-loaded routes
+- **Streaming**: SSE via fetch + ReadableStream (with POST fallback)
+- **Auth**: JWT stored in localStorage (access + refresh tokens)
+- **Markdown**: react-markdown + rehype-sanitize + rehype-highlight
+- **Performance**: @tanstack/react-virtual (message virtualization), React.memo
+
+See [LOVABLE_PROMPT.md](LOVABLE_PROMPT.md) for the complete frontend specification.
 
 ## Environment Variables
 
@@ -592,6 +621,12 @@ View traces at https://smith.langchain.com
 | `CELERY_BROKER_URL` | Celery broker (Redis) | `redis://localhost:6379/1` |
 | `CELERY_RESULT_BACKEND` | Celery result backend (Redis) | `redis://localhost:6379/2` |
 
+### CORS
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ALLOWED_ORIGINS` | Comma-separated allowed origins (used when `DEBUG=false`) | `http://localhost:5173,http://localhost:3000` |
+
 ### Guardrails
 
 | Variable | Description | Default |
@@ -630,8 +665,10 @@ View traces at https://smith.langchain.com
 
 ## Security
 
-- JWT authentication with access + refresh tokens
+- JWT authentication with access + refresh tokens (body-based refresh)
 - RBAC with role-based permission checks on every endpoint
+- **CORS**: Allows all origins in DEBUG mode; restricts to `ALLOWED_ORIGINS` in production
+- **Email validation**: EmailStr (Pydantic) on registration
 - **Prompt injection detection** — 11 regex patterns block adversarial inputs before agent execution
 - **Output grounding validation** — word-overlap check flags low-confidence answers; fallback response returned
 - **Source enforcement** — responses require at least `MIN_SUPPORTING_CHUNKS` retrieved sources
@@ -655,7 +692,7 @@ Disable for trusted internal environments: `GUARDRAILS_ENABLED=false`.
 Run the built-in evaluation suite against a 5-case default dataset:
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/admin/evaluate \
+curl -X POST http://localhost:8001/api/v1/admin/evaluate \
   -H "Authorization: Bearer <admin_token>"
 ```
 

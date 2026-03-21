@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     PORT: int = 8000
 
     # Database
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/bookstack_rag"
-    DATABASE_URL_SYNC: str = "postgresql://postgres:postgres@localhost:5432/bookstack_rag"
+    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5435/bookstack_rag"
+    DATABASE_URL_SYNC: str = "postgresql://postgres:postgres@localhost:5435/bookstack_rag"
 
     # BookStack
     BOOKSTACK_BASE_URL: str = ""
@@ -69,6 +69,9 @@ class Settings(BaseSettings):
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
+
+    # CORS
+    ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
 
     # Rate limiting
     RATE_LIMIT_PER_MINUTE: int = 60
