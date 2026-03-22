@@ -185,6 +185,7 @@ class IngestionPipeline:
                         chunk_index=idx,
                         content=chunk_text,
                         content_hash=self.parser.compute_hash(chunk_text),
+                        token_count=len(chunk_text.split()),
                         char_count=len(chunk_text),
                         metadata_={
                             "page_id": page_id,

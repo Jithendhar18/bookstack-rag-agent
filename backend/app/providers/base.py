@@ -23,6 +23,12 @@ class BaseLLM(ABC):
         """Return the model identifier."""
         ...
 
+    @property
+    @abstractmethod
+    def langchain_client(self):
+        """Return the underlying LangChain client for direct invocation."""
+        ...
+
 
 class BaseEmbedding(ABC):
     """Interface for embedding providers."""

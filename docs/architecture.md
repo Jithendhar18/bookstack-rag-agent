@@ -48,10 +48,10 @@ sequenceDiagram
     C->>API: POST /api/v1/ingestion/ingest
     activate API
     API->>API: Create task_id (UUID)
-    API-->>C: 202 Accepted {task_id}
+    API-->>C: 200 {task_id, status:"queued"}
     deactivate API
 
-    Note over API: BackgroundTask starts
+    Note over API: FastAPI BackgroundTask starts
 
     API->>BS: get_all_pages() — paginated (100/batch)
     BS-->>API: List of page summaries
@@ -499,7 +499,7 @@ sequenceDiagram
 
     Note over Admin,PG: Phase 1 — Ingestion
     Admin->>API: POST /api/v1/ingestion/ingest
-    API-->>Admin: 202 {task_id}
+    API-->>Admin: 200 {task_id, status:"queued"}
     API->>BS: Fetch all pages
     BS-->>API: Pages HTML
     API->>Pipeline: Parse → Chunk → Embed
@@ -578,8 +578,7 @@ sequenceDiagram
     API->>PG: Check existing user
     API->>API: hash_password(bcrypt)
     API->>PG: Create User (role="user")
-    API->>JWT: create_access_token + create_refresh_token
-    API-->>C: {access_token, refresh_token, user}
+    API-->>C: 201 UserResponse {id, username, email, role, ...}
 
     Note over C,PG: Authenticated Request
     C->>API: POST /api/v1/query<br/>Authorization: Bearer {access_token}

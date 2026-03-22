@@ -58,40 +58,51 @@ async def query(
         session_id = session.id
 
     # Run agent
-    result = await run_agent_query(
-        query=request.query,
-        tenant_id=current_user.tenant_id,
-        session_id=str(session_id),
-    )
+    try:
+        logger.info(f"Running agent query: {request.query[:100]}")
+        result = await run_agent_query(
+            query=request.query,
+            tenant_id=current_user.tenant_id,
+            session_id=str(session_id),
+        )
+        logger.info("Agent query completed successfully")
+    except Exception as e:
+        logger.error(f"Agent query failed: {type(e).__name__}: {e}", exc_info=True)
+        raise
 
     latency_ms = (time.time() - start) * 1000
 
     # Store messages
-    db.add(ChatMessage(
-        id=uuid.uuid4(),
-        session_id=session_id,
-        role="user",
-        content=request.query,
-    ))
-    db.add(ChatMessage(
-        id=uuid.uuid4(),
-        session_id=session_id,
-        role="assistant",
-        content=result["answer"],
-        sources=result.get("sources", []),
-    ))
+    try:
+        db.add(ChatMessage(
+            id=uuid.uuid4(),
+            session_id=session_id,
+            role="user",
+            content=request.query,
+        ))
+        db.add(ChatMessage(
+            id=uuid.uuid4(),
+            session_id=session_id,
+            role="assistant",
+            content=result["answer"],
+            sources=result.get("sources", []),
+        ))
 
-    # Audit log
-    db.add(AuditLog(
-        id=uuid.uuid4(),
-        user_id=current_user.user_id,
-        action="query",
-        resource="query",
-        details={"query": request.query[:200], "latency_ms": latency_ms},
-        tenant_id=current_user.tenant_id,
-    ))
+        # Audit log
+        db.add(AuditLog(
+            id=uuid.uuid4(),
+            user_id=current_user.user_id,
+            action="query",
+            resource="query",
+            details={"query": request.query[:200], "latency_ms": latency_ms},
+            tenant_id=current_user.tenant_id,
+        ))
 
-    await db.commit()
+        await db.commit()
+        logger.info("Database commit successful")
+    except Exception as e:
+        logger.error(f"Database save failed: {type(e).__name__}: {e}", exc_info=True)
+        raise
 
     sources = [
         SourceDocument(
@@ -111,6 +122,7 @@ async def query(
         trace_id=result.get("metadata", {}).get("trace_id"),
         latency_ms=latency_ms,
     )
+
 
 
 @router.post("/stream")

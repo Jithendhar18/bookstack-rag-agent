@@ -22,7 +22,8 @@ def get_llm() -> BaseLLM:
 
     settings = get_settings()
 
-    if settings.LLM_PROVIDER == "ollama":
+    if settings.LLM_PROVIDER == "ollama" or not settings.LLM_API_KEY:
+        # Use Ollama for local inference if provider is explicitly set or if no API key is configured
         from app.providers.llm.ollama import OllamaLLM
         _llm = OllamaLLM(
             model=settings.LLM_MODEL,
@@ -31,17 +32,18 @@ def get_llm() -> BaseLLM:
             max_tokens=settings.LLM_MAX_TOKENS,
         )
     else:
+        # Use OpenAI-compatible provider
         from app.providers.llm.openai_compatible import OpenAICompatibleLLM
         _llm = OpenAICompatibleLLM(
             model=settings.LLM_MODEL,
-            api_key=settings.LLM_API_KEY or "",
-            base_url=settings.LLM_BASE_URL or "",
+            api_key=settings.LLM_API_KEY,
+            base_url=settings.LLM_BASE_URL,
             temperature=settings.LLM_TEMPERATURE,
             max_tokens=settings.LLM_MAX_TOKENS,
             provider_name=settings.LLM_PROVIDER,
         )
 
-    logger.info(f"LLM: provider={settings.LLM_PROVIDER}, model={settings.LLM_MODEL}")
+    logger.info(f"LLM: provider={settings.LLM_PROVIDER or 'ollama'}, model={settings.LLM_MODEL}")
     return _llm
 
 

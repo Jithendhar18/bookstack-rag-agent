@@ -142,7 +142,13 @@ async def run_agent_query(
         "metadata": {},
     }
 
-    result = await agent.ainvoke(initial_state)
+    try:
+        logger.info(f"Starting agent invocation for query: {query[:100]}...")
+        result = await agent.ainvoke(initial_state)
+        logger.info(f"Agent invocation completed successfully")
+    except Exception as e:
+        logger.error(f"Agent invocation failed: {type(e).__name__}: {e}", exc_info=True)
+        raise
 
     response = {
         "answer": result.get("answer", ""),

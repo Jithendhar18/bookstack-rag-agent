@@ -26,8 +26,7 @@ psycopg2-binary==2.9.10
 
 # Auth
 python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-bcrypt==4.2.1
+passlib[argon2]==1.7.4
 
 # Utilities
 httpx==0.28.1

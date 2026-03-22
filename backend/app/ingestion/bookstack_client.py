@@ -17,6 +17,12 @@ class BookStackClient:
     """Async client for BookStack REST API."""
 
     def __init__(self):
+        if not settings.BOOKSTACK_BASE_URL:
+            raise ValueError(
+                "BOOKSTACK_BASE_URL is not configured. "
+                "Set BOOKSTACK_BASE_URL, BOOKSTACK_TOKEN_ID, and BOOKSTACK_TOKEN_SECRET "
+                "in backend/.env before triggering ingestion."
+            )
         self.base_url = settings.BOOKSTACK_BASE_URL.rstrip("/")
         self.headers = {
             "Authorization": f"Token {settings.BOOKSTACK_TOKEN_ID}:{settings.BOOKSTACK_TOKEN_SECRET}",

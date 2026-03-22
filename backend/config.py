@@ -58,6 +58,9 @@ class Settings(BaseSettings):
 
     # ─── Auth / JWT ───────────────────────────────────────────────────
     JWT_SECRET_KEY: str = "change-this-to-a-secure-random-string"
+    JWT_ALGORITHM: str = "HS256"
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     ADMIN_DEFAULT_PASSWORD: str = "admin1234"
 
     # ─── Optional toggles ────────────────────────────────────────────
