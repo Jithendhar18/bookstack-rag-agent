@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.db.models import ChatSession, ChatMessage, AuditLog, AuditAction
+from app.db.models import ChatSession, ChatMessage, AuditLog
 from app.auth.dependencies import get_current_user, CurrentUser
 from app.agents.graph import run_agent_query, stream_agent_query
 from app.schemas.schemas import QueryRequest, QueryResponse, SourceDocument
@@ -85,7 +85,7 @@ async def query(
     db.add(AuditLog(
         id=uuid.uuid4(),
         user_id=current_user.user_id,
-        action=AuditAction.QUERY,
+        action="query",
         resource="query",
         details={"query": request.query[:200], "latency_ms": latency_ms},
         tenant_id=current_user.tenant_id,

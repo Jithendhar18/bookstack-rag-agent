@@ -6,25 +6,25 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal, init_db
-from app.db.models import Role, Permission, User, RoleName
+from app.db.models import Role, Permission, User
 from app.auth.password import hash_password
 from config import get_settings
 
 
 ROLE_PERMISSIONS = {
-    RoleName.ADMIN: [
+    "admin": [
         ("ingestion", "read"), ("ingestion", "write"), ("ingestion", "delete"),
         ("query", "read"), ("query", "write"),
         ("admin", "read"), ("admin", "write"), ("admin", "delete"),
         ("users", "read"), ("users", "write"), ("users", "delete"),
     ],
-    RoleName.DEVELOPER: [
+    "developer": [
         ("ingestion", "read"), ("ingestion", "write"),
         ("query", "read"), ("query", "write"),
         ("admin", "read"),
         ("users", "read"),
     ],
-    RoleName.USER: [
+    "user": [
         ("query", "read"), ("query", "write"),
     ],
 }
@@ -36,7 +36,7 @@ async def seed_roles_and_permissions(db: AsyncSession):
         result = await db.execute(select(Role).where(Role.name == role_name))
         role = result.scalar_one_or_none()
         if role is None:
-            role = Role(id=uuid.uuid4(), name=role_name, description=f"{role_name.value} role")
+            role = Role(id=uuid.uuid4(), name=role_name, description=f"{role_name} role")
             db.add(role)
             await db.flush()
 
@@ -65,7 +65,7 @@ async def seed_admin_user(db: AsyncSession):
     if result.scalar_one_or_none() is not None:
         return
 
-    result = await db.execute(select(Role).where(Role.name == RoleName.ADMIN))
+    result = await db.execute(select(Role).where(Role.name == "admin"))
     admin_role = result.scalar_one_or_none()
     if admin_role is None:
         return
@@ -87,12 +87,15 @@ async def seed_admin_user(db: AsyncSession):
 
 
 async def run_seeds():
-    """Initialize DB and run all seeders."""
-    await init_db()
+    """Run all seeders. Assumes the database schema is already up-to-date."""
     async with AsyncSessionLocal() as db:
         await seed_roles_and_permissions(db)
         await seed_admin_user(db)
 
 
 if __name__ == "__main__":
-    asyncio.run(run_seeds())
+    async def _standalone():
+        await init_db()
+        await run_seeds()
+
+    asyncio.run(_standalone())

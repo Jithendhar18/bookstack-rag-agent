@@ -14,19 +14,11 @@ from langsmith import traceable
 from app.agents.state import AgentState
 from app.agents.nodes import AgentNodes
 from app.core.cache import get_cache
-from app.providers.factory import log_active_configuration
 
 from config import get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
-
-
-def should_use_tools(state: AgentState) -> str:
-    """Conditional edge: decide whether to route through tool node."""
-    if state.get("error"):
-        return "context_compressor"
-    return "context_compressor"
 
 
 def has_documents(state: AgentState) -> str:
@@ -47,12 +39,7 @@ def is_blocked(state: AgentState) -> str:
 
 
 def build_agent_graph() -> StateGraph:
-    """Construct the configurable LangGraph RAG agent workflow.
-
-    All nodes use factory-provided components.
-    Toggle-disabled modules are handled internally by each node
-    (they pass through data unchanged).
-    """
+    """Construct the LangGraph RAG agent workflow."""
     nodes = AgentNodes()
 
     graph = StateGraph(AgentState)
@@ -62,7 +49,6 @@ def build_agent_graph() -> StateGraph:
     graph.add_node("query_rewrite", nodes.query_rewrite_node)
     graph.add_node("retriever", nodes.retriever_node)
     graph.add_node("reranker", nodes.reranker_node)
-    graph.add_node("tool", nodes.tool_node)
     graph.add_node("context_compressor", nodes.context_compressor_node)
     graph.add_node("llm_reasoning", nodes.llm_reasoning_node)
     graph.add_node("response_validator", nodes.response_validator_node)
@@ -88,15 +74,8 @@ def build_agent_graph() -> StateGraph:
         {"reranker": "reranker", "response": "response"},
     )
 
-    # reranker → [should_use_tools?] → context_compressor
-    graph.add_conditional_edges(
-        "reranker",
-        should_use_tools,
-        {"context_compressor": "context_compressor"},
-    )
-
-    # tool → context_compressor
-    graph.add_edge("tool", "context_compressor")
+    # reranker → context_compressor
+    graph.add_edge("reranker", "context_compressor")
 
     # context_compressor → llm_reasoning
     graph.add_edge("context_compressor", "llm_reasoning")
@@ -121,10 +100,9 @@ def get_agent():
     """Get or create the compiled agent graph."""
     global _compiled_graph
     if _compiled_graph is None:
-        log_active_configuration()
         graph = build_agent_graph()
         _compiled_graph = graph.compile()
-        logger.info("LangGraph agent compiled successfully (v3 modular pipeline)")
+        logger.info("LangGraph agent compiled successfully")
     return _compiled_graph
 
 
@@ -159,7 +137,6 @@ async def run_agent_query(
         "compressed_documents": [],
         "answer": "",
         "sources": [],
-        "tool_results": None,
         "validation_result": None,
         "error": None,
         "metadata": {},
@@ -202,7 +179,6 @@ async def stream_agent_query(
         "compressed_documents": [],
         "answer": "",
         "sources": [],
-        "tool_results": None,
         "validation_result": None,
         "error": None,
         "metadata": {},

@@ -18,13 +18,13 @@ async def health_detailed():
     """Detailed health check including subsystems."""
     checks = {"api": "ok"}
 
-    # Redis
+    # Cache
     try:
         from app.core.cache import get_cache
         cache = await get_cache()
-        checks["redis"] = "ok" if await cache.health_check() else "unhealthy"
+        checks["cache"] = "ok" if await cache.health_check() else "unhealthy"
     except Exception:
-        checks["redis"] = "unavailable"
+        checks["cache"] = "unavailable"
 
     # Vector store
     try:

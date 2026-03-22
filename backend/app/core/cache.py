@@ -1,11 +1,11 @@
-"""Redis caching layer for query results, retrieval results, and embeddings."""
+"""In-memory caching layer for query results and retrieval results."""
 
-import json
 import hashlib
 import logging
-from typing import Any, Optional
+import time
+from typing import Optional
 
-import redis.asyncio as aioredis
+from cachetools import TTLCache
 
 from config import get_settings
 
@@ -13,40 +13,22 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-class RedisCache:
-    """Async Redis cache with typed key prefixes and TTL."""
+class InMemoryCache:
+    """Simple in-memory TTL cache replacing Redis."""
 
-    _instance: Optional["RedisCache"] = None
-    _client: Optional[aioredis.Redis] = None
-
-    PREFIX_QUERY = "rag:query:"
-    PREFIX_RETRIEVAL = "rag:retrieval:"
-    PREFIX_EMBEDDING = "rag:embedding:"
+    _instance: Optional["InMemoryCache"] = None
 
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-        return cls._instance
-
-    async def connect(self):
-        if self._client is None:
-            self._client = aioredis.from_url(
-                settings.REDIS_URL,
-                decode_responses=True,
-                max_connections=20,
+            cls._instance._query_cache = TTLCache(
+                maxsize=1000, ttl=300,
             )
-            logger.info("Redis cache connected")
-
-    async def close(self):
-        if self._client:
-            await self._client.aclose()
-            self._client = None
-
-    @property
-    def client(self) -> aioredis.Redis:
-        if self._client is None:
-            raise RuntimeError("Redis not connected. Call connect() first.")
-        return self._client
+            cls._instance._retrieval_cache = TTLCache(
+                maxsize=1000, ttl=300,
+            )
+            logger.info("In-memory cache initialized")
+        return cls._instance
 
     @staticmethod
     def _hash_key(*parts: str) -> str:
@@ -58,59 +40,55 @@ class RedisCache:
     async def get_query_result(self, query: str, tenant_id: str) -> Optional[dict]:
         if not settings.CACHE_ENABLED:
             return None
-        key = f"{self.PREFIX_QUERY}{self._hash_key(query.lower().strip(), tenant_id)}"
-        data = await self.client.get(key)
-        if data:
+        key = self._hash_key(query.lower().strip(), tenant_id)
+        result = self._query_cache.get(key)
+        if result:
             logger.debug(f"Query cache HIT: {query[:50]}")
-            return json.loads(data)
-        return None
+        return result
 
     async def set_query_result(self, query: str, tenant_id: str, result: dict):
         if not settings.CACHE_ENABLED:
             return
-        key = f"{self.PREFIX_QUERY}{self._hash_key(query.lower().strip(), tenant_id)}"
-        await self.client.setex(key, settings.CACHE_QUERY_TTL, json.dumps(result, default=str))
+        key = self._hash_key(query.lower().strip(), tenant_id)
+        self._query_cache[key] = result
 
     # ─── Retrieval cache ─────────────────────────────────────────────────
 
     async def get_retrieval_result(self, query: str, tenant_id: str, top_k: int) -> Optional[list]:
         if not settings.CACHE_ENABLED:
             return None
-        key = f"{self.PREFIX_RETRIEVAL}{self._hash_key(query.lower().strip(), tenant_id, str(top_k))}"
-        data = await self.client.get(key)
-        if data:
+        key = self._hash_key(query.lower().strip(), tenant_id, str(top_k))
+        result = self._retrieval_cache.get(key)
+        if result:
             logger.debug(f"Retrieval cache HIT: {query[:50]}")
-            return json.loads(data)
-        return None
+        return result
 
     async def set_retrieval_result(self, query: str, tenant_id: str, top_k: int, results: list):
         if not settings.CACHE_ENABLED:
             return
-        key = f"{self.PREFIX_RETRIEVAL}{self._hash_key(query.lower().strip(), tenant_id, str(top_k))}"
-        await self.client.setex(key, settings.CACHE_RETRIEVAL_TTL, json.dumps(results, default=str))
+        key = self._hash_key(query.lower().strip(), tenant_id, str(top_k))
+        self._retrieval_cache[key] = results
 
     # ─── Invalidation ────────────────────────────────────────────────────
 
     async def invalidate_tenant(self, tenant_id: str):
-        """Invalidate all cached data for a tenant (called after ingestion)."""
-        for prefix in [self.PREFIX_QUERY, self.PREFIX_RETRIEVAL]:
-            async for key in self.client.scan_iter(match=f"{prefix}*"):
-                await self.client.delete(key)
+        """Clear all cached data."""
+        self._query_cache.clear()
+        self._retrieval_cache.clear()
         logger.info(f"Cache invalidated for tenant: {tenant_id}")
 
     async def health_check(self) -> bool:
-        try:
-            return await self.client.ping()
-        except Exception:
-            return False
+        return True
+
+    async def close(self):
+        pass
 
 
-_cache: Optional[RedisCache] = None
+_cache: Optional[InMemoryCache] = None
 
 
-async def get_cache() -> RedisCache:
+async def get_cache() -> InMemoryCache:
     global _cache
     if _cache is None:
-        _cache = RedisCache()
-        await _cache.connect()
+        _cache = InMemoryCache()
     return _cache

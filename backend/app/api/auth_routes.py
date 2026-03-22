@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.db.models import User, Role, RoleName, AuditLog, AuditAction
+from app.db.models import User, Role, AuditLog
 from app.auth.password import hash_password, verify_password
 from app.auth.jwt_handler import create_access_token, create_refresh_token, decode_token
 from app.auth.dependencies import get_current_user, CurrentUser
@@ -43,14 +43,14 @@ async def login(
     role_result = await db.execute(select(Role).where(Role.id == user.role_id))
     role = role_result.scalar_one()
 
-    access_token = create_access_token(user.id, role.name.value, user.tenant_id)
+    access_token = create_access_token(user.id, role.name, user.tenant_id)
     refresh_token = create_refresh_token(user.id)
 
     # Audit log
     db.add(AuditLog(
         id=uuid.uuid4(),
         user_id=user.id,
-        action=AuditAction.LOGIN,
+        action="login",
         resource="auth",
         ip_address=req.client.host if req.client else None,
         tenant_id=user.tenant_id,
@@ -78,7 +78,7 @@ async def register(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already exists")
 
     # Get user role
-    result = await db.execute(select(Role).where(Role.name == RoleName.USER))
+    result = await db.execute(select(Role).where(Role.name == "user"))
     user_role = result.scalar_one_or_none()
     if user_role is None:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Default role not found. Run seed first.")
@@ -102,7 +102,7 @@ async def register(
         username=user.username,
         full_name=user.full_name,
         is_active=user.is_active,
-        role=RoleName.USER,
+        role="user",
         tenant_id=user.tenant_id,
         created_at=user.created_at,
     )
@@ -127,7 +127,7 @@ async def refresh_token(
     role_result = await db.execute(select(Role).where(Role.id == user.role_id))
     role = role_result.scalar_one()
 
-    access_token = create_access_token(user.id, role.name.value, user.tenant_id)
+    access_token = create_access_token(user.id, role.name, user.tenant_id)
     new_refresh = create_refresh_token(user.id)
 
     return TokenResponse(

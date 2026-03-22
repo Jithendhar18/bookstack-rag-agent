@@ -5,6 +5,7 @@ enable/disable toggles from the environment configuration.
 """
 
 import logging
+import math
 import time
 from typing import Dict, Any, List
 
@@ -13,9 +14,8 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langsmith import traceable
 
 from app.agents.state import AgentState
-from app.providers.factory import get_llm, get_fallback_llm, get_reranker, get_retriever
+from app.providers.factory import get_llm, get_reranker, get_retriever
 from app.core.guardrails import GuardrailsService
-from app.agents.tools import get_tool_registry
 from config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,6 @@ class AgentNodes:
 
     def __init__(self):
         self.guardrails = GuardrailsService()
-        self.tool_registry = get_tool_registry()
 
         # Load tokenizer for context compression
         try:
@@ -90,7 +89,7 @@ class AgentNodes:
             "metadata": {
                 **state.get("metadata", {}),
                 "start_time": time.time(),
-                "pipeline_config": settings.get_active_modules(),
+                "pipeline_config": {"llm": settings.LLM_PROVIDER, "retrieval": settings.RETRIEVAL_MODE},
             },
         }
 
@@ -121,19 +120,11 @@ class AgentNodes:
         try:
             llm = get_llm()
             prompt = QUERY_REWRITE_PROMPT.format(query=query)
-            messages = [{"role": "user", "content": prompt}]
 
-            import asyncio
-            # Handle both sync and async contexts
-            try:
-                loop = asyncio.get_running_loop()
-                # We're in an async context but this node is called synchronously by LangGraph
-                # Use the underlying langchain client for sync invocation
-                lc_client = llm.langchain_client
-                response = lc_client.invoke([HumanMessage(content=prompt)])
-                rewritten = response.content.strip()
-            except RuntimeError:
-                rewritten = query
+            # LangGraph nodes run synchronously — use the langchain client directly
+            lc_client = llm.langchain_client
+            response = lc_client.invoke([HumanMessage(content=prompt)])
+            rewritten = response.content.strip()
 
             # Fallback to original if rewrite is empty or too different
             if not rewritten or len(rewritten) > len(query) * 5:
@@ -228,13 +219,6 @@ class AgentNodes:
                 },
             }
 
-    # ─── Tool Node ───────────────────────────────────────────────────────
-
-    @traceable(name="tool_node")
-    def tool_node(self, state: AgentState) -> Dict[str, Any]:
-        """Execute tools if needed (extensibility point)."""
-        return {"tool_results": None}
-
     # ─── Context Compressor Node ─────────────────────────────────────────
 
     @traceable(name="context_compressor_node")
@@ -298,7 +282,8 @@ class AgentNodes:
             best_idx = 0
 
             for i, candidate in enumerate(remaining):
-                relevance = candidate.get("rerank_score", candidate.get("score", 0))
+                raw_score = candidate.get("rerank_score", candidate.get("score", 0))
+                relevance = raw_score if isinstance(raw_score, (int, float)) and not math.isnan(raw_score) else 0.0
 
                 max_sim = 0
                 cand_words = set(candidate.get("text", "").lower().split())
@@ -342,10 +327,7 @@ class AgentNodes:
 
     @traceable(name="llm_reasoning_node")
     def llm_reasoning_node(self, state: AgentState) -> Dict[str, Any]:
-        """Generate answer using the configured LLM provider.
-
-        Includes automatic fallback to LLM_FALLBACK_PROVIDER on failure.
-        """
+        """Generate answer using the configured LLM provider."""
         if state.get("error"):
             return {"answer": state["error"], "sources": []}
 
@@ -358,53 +340,34 @@ class AgentNodes:
             title = doc.get("metadata", {}).get("title", f"Document {i+1}")
             text = doc.get("text", "")
             context_parts.append(f"[{i+1}] {title}\n{text}")
+            score = doc.get("rerank_score", doc.get("score", 0))
+            doc_meta = doc.get("metadata", {})
             sources.append({
                 "chunk_id": doc.get("id", ""),
                 "document_title": title,
                 "content": text[:500],
-                "score": doc.get("rerank_score", doc.get("score", 0)),
-                "metadata": doc.get("metadata", {}),
+                "score": score if isinstance(score, (int, float)) and not math.isnan(score) else 0.0,
+                "source_url": doc_meta.get("source_url"),
+                "metadata": doc_meta,
             })
 
         context = "\n\n---\n\n".join(context_parts) if context_parts else "No relevant documents found."
 
         system_msg = SystemMessage(content=SYSTEM_PROMPT.format(context=context))
 
-        # Try primary LLM
         llm = get_llm()
         try:
             response = llm.langchain_client.invoke([system_msg] + state.get("messages", []))
-            provider_used = llm.model_name
-        except Exception as primary_err:
-            logger.error(f"Primary LLM failed ({llm.model_name}): {primary_err}")
-
-            # Try fallback LLM
-            fallback = get_fallback_llm()
-            if fallback:
-                try:
-                    logger.info(f"Attempting fallback LLM: {fallback.model_name}")
-                    response = fallback.langchain_client.invoke([system_msg] + state.get("messages", []))
-                    provider_used = f"{fallback.model_name} (fallback)"
-                except Exception as fallback_err:
-                    logger.error(f"Fallback LLM also failed: {fallback_err}")
-                    return {
-                        "answer": "I'm temporarily unable to generate a response. Please try again later.",
-                        "sources": sources,
-                        "metadata": {
-                            **state.get("metadata", {}),
-                            "llm_error": str(primary_err),
-                            "fallback_error": str(fallback_err),
-                        },
-                    }
-            else:
-                return {
-                    "answer": "I'm temporarily unable to generate a response. Please try again later.",
-                    "sources": sources,
-                    "metadata": {
-                        **state.get("metadata", {}),
-                        "llm_error": str(primary_err),
-                    },
-                }
+        except Exception as e:
+            logger.error(f"LLM failed ({llm.model_name}): {e}")
+            return {
+                "answer": "I'm temporarily unable to generate a response. Please try again later.",
+                "sources": sources,
+                "metadata": {
+                    **state.get("metadata", {}),
+                    "llm_error": str(e),
+                },
+            }
 
         return {
             "answer": response.content,
@@ -414,7 +377,7 @@ class AgentNodes:
                 **state.get("metadata", {}),
                 "end_time": time.time(),
                 "documents_used": len(documents),
-                "llm_provider": provider_used,
+                "llm_provider": llm.model_name,
             },
         }
 

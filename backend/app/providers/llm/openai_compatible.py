@@ -46,6 +46,7 @@ class OpenAICompatibleLLM(BaseLLM):
             max_tokens=max_tokens,
             api_key=api_key,
             base_url=base_url,
+            max_retries=3,
         )
         logger.info(f"LLM initialized: provider={provider_name}, model={model}, base_url={base_url}")
 

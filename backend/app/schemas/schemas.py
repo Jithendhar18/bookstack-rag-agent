@@ -74,6 +74,7 @@ class SourceDocument(BaseModel):
     document_title: str
     content: str
     score: float
+    source_url: Optional[str] = None
     metadata: dict[str, Any] = {}
 
 
@@ -114,10 +115,58 @@ class DocumentResponse(BaseModel):
     title: str
     status: str
     chunk_count: int = 0
+    book_id: Optional[int] = None
+    book_name: Optional[str] = None
+    chapter_id: Optional[int] = None
+    chapter_name: Optional[str] = None
     ingested_at: Optional[datetime]
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# ─── Book / Chapter hierarchy schemas ──────────────────────────────────────────
+
+class PageSummaryResponse(BaseModel):
+    """Lightweight page node within a book hierarchy response."""
+    id: UUID
+    bookstack_id: int
+    title: str
+    slug: Optional[str] = None
+    chapter_id: Optional[int] = None
+    chapter_name: Optional[str] = None
+    status: str
+    chunk_count: int = 0
+    source_url: Optional[str] = None
+    ingested_at: Optional[datetime]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ChapterGroupResponse(BaseModel):
+    """Group of pages sharing the same chapter (chapter_id=None = direct book pages)."""
+    chapter_id: Optional[int]
+    chapter_name: Optional[str]
+    page_count: int
+    pages: List[PageSummaryResponse]
+
+
+class BookSummaryResponse(BaseModel):
+    """Per-book aggregate — used in the /ingestion/books listing."""
+    book_id: int
+    book_name: Optional[str] = None
+    page_count: int
+    chunk_count: int
+
+
+class BookHierarchyResponse(BaseModel):
+    """Full Book → Chapter → Page hierarchy for a single book."""
+    book_id: int
+    book_name: Optional[str] = None
+    total_pages: int
+    total_chunks: int
+    chapters: List[ChapterGroupResponse]
 
 
 # ─── Chat ────────────────────────────────────────────────────────────────────
@@ -148,7 +197,9 @@ class SystemMetrics(BaseModel):
     total_embeddings: int
     total_users: int
     total_queries: int
+    total_books: int
     documents_by_status: dict[str, int]
+    documents_by_book: dict[str, int]   # book_id (str) -> page count
     avg_query_latency_ms: Optional[float]
 
 

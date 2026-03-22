@@ -15,15 +15,13 @@ logger = logging.getLogger(__name__)
 class LocalEmbedding(BaseEmbedding):
     """Embedding provider using locally loaded SentenceTransformer models."""
 
-    def __init__(self, model_name: str, device: str = "cpu", batch_size: int = 32, dimension: int = 1024):
+    def __init__(self, model_name: str, dimension: int = 768):
         self._model_name = model_name
-        self._device = device
-        self._batch_size = batch_size
         self._dimension = dimension
         self._cache: LRUCache = LRUCache(maxsize=10000)
 
-        logger.info(f"Loading local embedding model: {model_name} on {device}")
-        self._model = SentenceTransformer(model_name, device=device)
+        logger.info(f"Loading local embedding model: {model_name}")
+        self._model = SentenceTransformer(model_name)
         logger.info(f"Local embedding model loaded: {model_name}")
 
     def _cache_key(self, text: str) -> str:
@@ -58,7 +56,7 @@ class LocalEmbedding(BaseEmbedding):
             embeddings = self._model.encode(
                 uncached_texts,
                 normalize_embeddings=True,
-                batch_size=self._batch_size,
+                batch_size=32,
                 show_progress_bar=False,
             ).tolist()
 

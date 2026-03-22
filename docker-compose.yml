@@ -15,16 +15,6 @@ services:
       timeout: 5s
       retries: 5
 
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
   qdrant:
     image: qdrant/qdrant:v1.12.4
     platform: linux/amd64
@@ -43,55 +33,21 @@ services:
       context: ./backend
       dockerfile: ../docker/Dockerfile
     ports:
-      - "8001:8000"
+      - "8000:8000"
     env_file:
       - ./backend/.env
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/bookstack_rag
       DATABASE_URL_SYNC: postgresql://postgres:postgres@db:5432/bookstack_rag
-      REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
-      VECTOR_STORE_TYPE: qdrant
+      AUTO_MIGRATE: "true"
     depends_on:
       db:
         condition: service_healthy
-      redis:
-        condition: service_healthy
       qdrant:
         condition: service_healthy
-    volumes:
-      - faiss_data:/app/data
-
-  celery_worker:
-    build:
-      context: ./backend
-      dockerfile: ../docker/Dockerfile
-    command: celery -A app.ingestion.celery_app:celery_app worker --loglevel=info --concurrency=2
-    env_file:
-      - ./backend/.env
-    environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/bookstack_rag
-      DATABASE_URL_SYNC: postgresql://postgres:postgres@db:5432/bookstack_rag
-      REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
-      QDRANT_HOST: qdrant
-      QDRANT_PORT: 6333
-      VECTOR_STORE_TYPE: qdrant
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      qdrant:
-        condition: service_healthy
-    volumes:
-      - faiss_data:/app/data
 
 volumes:
   pgdata:
-  faiss_data:
   qdrant_data:

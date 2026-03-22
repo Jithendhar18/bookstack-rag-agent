@@ -5,18 +5,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
 
 from config import get_settings
 from app.core.logging_config import setup_logging
-from app.core.observability import setup_langsmith
 from app.core.middleware import RequestContextMiddleware
 from app.core.exceptions import generic_exception_handler
 from app.db.session import init_db
 from app.db.seed import run_seeds
-from app.providers.factory import log_active_configuration
 
 from app.api.health_routes import router as health_router
 from app.api.auth_routes import router as auth_router
@@ -27,51 +22,33 @@ from app.api.admin_routes import router as admin_router
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
-# Rate limiter
-limiter = Limiter(key_func=get_remote_address)
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
     setup_logging("DEBUG" if settings.DEBUG else "INFO")
-    setup_langsmith()
-    logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
+    logger.info("Starting BookStack RAG Agent")
 
-    # Log active pipeline configuration
-    log_active_configuration()
+    # Run Alembic migrations
+    import os
+    if os.getenv("AUTO_MIGRATE", "true").lower() == "true":
+        await init_db()
+        setup_logging("DEBUG" if settings.DEBUG else "INFO")
+        logger.info("Database migrations applied")
 
-    # Initialize database and seed
-    await init_db()
+    # Seed default roles & admin user
     await run_seeds()
-    logger.info("Database initialized and seeded")
-
-    # Initialize Redis cache
-    from app.core.cache import get_cache
-    try:
-        cache = await get_cache()
-        logger.info("Redis cache connected")
-    except Exception as e:
-        logger.warning(f"Redis cache unavailable: {e}")
+    logger.info("Database seeded")
 
     yield
-
-    # Shutdown: close Redis
-    try:
-        from app.core.cache import _cache
-        if _cache:
-            await _cache.close()
-    except Exception:
-        pass
-
     logger.info("Shutting down")
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title=settings.APP_NAME,
-        version=settings.APP_VERSION,
-        description="BookStack RAG Agent with LangGraph, LangSmith, and RBAC",
+        title="BookStack RAG Agent",
+        version="1.0.0",
+        description="BookStack RAG Agent with LangGraph",
         lifespan=lifespan,
     )
 
@@ -90,10 +67,6 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Rate limiting
-    app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
     # Global exception handler
     app.add_exception_handler(Exception, generic_exception_handler)
 
@@ -105,6 +78,9 @@ def create_app() -> FastAPI:
     app.include_router(admin_router, prefix="/api/v1")
 
     return app
+
+
+app = create_app()
 
 
 app = create_app()

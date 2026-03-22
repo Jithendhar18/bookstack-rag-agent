@@ -38,6 +38,14 @@ async def get_db() -> AsyncSession:
 
 
 async def init_db():
-    """Create all tables."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    """Run all Alembic migrations to head."""
+    import asyncio
+    from pathlib import Path
+    from alembic import command
+    from alembic.config import Config
+
+    cfg_path = Path(__file__).parent.parent.parent / "alembic.ini"
+    alembic_cfg = Config(str(cfg_path))
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, command.upgrade, alembic_cfg, "head")

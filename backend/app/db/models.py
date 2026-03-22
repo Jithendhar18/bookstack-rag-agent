@@ -1,41 +1,14 @@
-"""SQLAlchemy ORM models for the full database schema."""
+"""SQLAlchemy ORM models."""
 
 import uuid
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Integer, Float, Boolean, DateTime, Text,
-    ForeignKey, UniqueConstraint, Index, Enum as SAEnum,
+    ForeignKey, UniqueConstraint, Index, BigInteger,
 )
-from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from app.db.session import Base
-import enum
-
-
-# ─── Enums ───────────────────────────────────────────────────────────────────
-
-class RoleName(str, enum.Enum):
-    ADMIN = "admin"
-    DEVELOPER = "developer"
-    USER = "user"
-
-
-class DocumentStatus(str, enum.Enum):
-    PENDING = "pending"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
-class AuditAction(str, enum.Enum):
-    LOGIN = "login"
-    LOGOUT = "logout"
-    QUERY = "query"
-    INGEST = "ingest"
-    CREATE_USER = "create_user"
-    UPDATE_USER = "update_user"
-    DELETE_USER = "delete_user"
-    UPDATE_ROLE = "update_role"
 
 
 # ─── Users & RBAC ───────────────────────────────────────────────────────────
@@ -44,7 +17,7 @@ class Role(Base):
     __tablename__ = "roles"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name = Column(SAEnum(RoleName), unique=True, nullable=False)
+    name = Column(String(50), unique=True, nullable=False)
     description = Column(String(255))
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -57,8 +30,8 @@ class Permission(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     role_id = Column(UUID(as_uuid=True), ForeignKey("roles.id", ondelete="CASCADE"), nullable=False)
-    resource = Column(String(100), nullable=False)  # e.g. "ingestion", "query", "admin"
-    action = Column(String(50), nullable=False)  # e.g. "read", "write", "delete"
+    resource = Column(String(100), nullable=False)
+    action = Column(String(50), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     role = relationship("Role", back_populates="permissions")
@@ -98,15 +71,17 @@ class Document(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     bookstack_id = Column(Integer, nullable=False, index=True)
-    bookstack_type = Column(String(50), nullable=False)  # "page", "book", "chapter", "shelf"
+    bookstack_type = Column(String(50), nullable=False)
     title = Column(String(500), nullable=False)
     slug = Column(String(500))
     book_id = Column(Integer, index=True)
+    book_name = Column(String(500))
     chapter_id = Column(Integer, index=True)
-    content_hash = Column(String(64), nullable=False)  # SHA-256 for dedup
+    chapter_name = Column(String(500))
+    content_hash = Column(String(64), nullable=False)
     html_content = Column(Text)
     plain_content = Column(Text)
-    status = Column(SAEnum(DocumentStatus), default=DocumentStatus.PENDING)
+    status = Column(String(50), default="pending")
     tenant_id = Column(String(100), nullable=False, default="default", index=True)
     metadata_ = Column("metadata", JSONB, default={})
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -118,6 +93,7 @@ class Document(Base):
     __table_args__ = (
         UniqueConstraint("bookstack_id", "bookstack_type", "tenant_id", name="uq_bookstack_doc"),
         Index("ix_documents_tenant_status", "tenant_id", "status"),
+        Index("ix_documents_tenant_book", "tenant_id", "book_id"),
     )
 
 
@@ -148,7 +124,7 @@ class EmbeddingMetadata(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     chunk_id = Column(UUID(as_uuid=True), ForeignKey("chunks.id", ondelete="CASCADE"), unique=True, nullable=False)
-    vector_store_id = Column(String(255), nullable=False)  # ID in FAISS/PGVector
+    vector_store_id = Column(String(255), nullable=False)
     model_name = Column(String(255), nullable=False)
     dimension = Column(Integer, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -177,7 +153,7 @@ class ChatMessage(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     session_id = Column(UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False)
-    role = Column(String(20), nullable=False)  # "user", "assistant", "system"
+    role = Column(String(20), nullable=False)
     content = Column(Text, nullable=False)
     metadata_ = Column("metadata", JSONB, default={})
     sources = Column(JSONB, default=[])
@@ -194,7 +170,7 @@ class AuditLog(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    action = Column(SAEnum(AuditAction), nullable=False)
+    action = Column(String(50), nullable=False)
     resource = Column(String(100))
     resource_id = Column(String(255))
     details = Column(JSONB, default={})
@@ -208,3 +184,34 @@ class AuditLog(Base):
         Index("ix_audit_logs_tenant_action", "tenant_id", "action"),
         Index("ix_audit_logs_created_at", "created_at"),
     )
+
+
+# ─── Ingestion Tracking ─────────────────────────────────────────────────────
+
+class IngestionRun(Base):
+    __tablename__ = "ingestion_runs"
+
+    run_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)
+    status = Column(String(50), nullable=False, default="RUNNING")
+    processed_pages = Column(Integer, nullable=False, default=0)
+    failed_pages = Column(Integer, nullable=False, default=0)
+    notes = Column(Text, nullable=True)
+
+    audits = relationship("PageSyncAudit", back_populates="run", cascade="all, delete-orphan")
+
+
+class PageSyncAudit(Base):
+    __tablename__ = "page_sync_audit"
+
+    audit_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    run_id = Column(BigInteger, ForeignKey("ingestion_runs.run_id", ondelete="CASCADE"), nullable=False)
+    page_id = Column(BigInteger, nullable=True)
+    status = Column(String(50), nullable=False)
+    reason = Column(Text, nullable=False)
+    source_updated_at = Column(DateTime, nullable=True)
+    local_updated_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    run = relationship("IngestionRun", back_populates="audits")

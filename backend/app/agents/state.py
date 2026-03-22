@@ -27,8 +27,6 @@ class AgentState(TypedDict):
     answer: str
     # Source citations
     sources: List[dict]
-    # Tool results
-    tool_results: Optional[dict]
     # Response validation result
     validation_result: Optional[dict]
     # Error tracking

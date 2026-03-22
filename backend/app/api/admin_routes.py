@@ -9,14 +9,9 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.db.models import (
-    User, Role, RoleName, Document, Chunk, EmbeddingMetadata,
-    AuditLog, AuditAction, DocumentStatus,
-)
+from app.db.models import User, Role, Document, Chunk, EmbeddingMetadata, AuditLog
 from app.auth.dependencies import require_roles, CurrentUser
-from app.auth.password import hash_password
 from app.schemas.schemas import SystemMetrics, UserResponse, UserUpdateRequest
-from app.core.evaluation import EvaluationRunner
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +50,7 @@ async def get_metrics(
     total_queries = (await db.execute(
         select(func.count(AuditLog.id)).where(
             AuditLog.tenant_id == tenant,
-            AuditLog.action == AuditAction.QUERY,
+            AuditLog.action == "query",
         )
     )).scalar() or 0
 
@@ -65,7 +60,17 @@ async def get_metrics(
         .where(Document.tenant_id == tenant)
         .group_by(Document.status)
     )
-    docs_by_status = {row[0].value if row[0] else "unknown": row[1] for row in status_result}
+    docs_by_status = {str(row[0]) if row[0] else "unknown": row[1] for row in status_result}
+
+    # Documents grouped by book_id
+    book_result = await db.execute(
+        select(Document.book_id, func.count(Document.id))
+        .where(Document.tenant_id == tenant, Document.book_id.isnot(None))
+        .group_by(Document.book_id)
+        .order_by(Document.book_id)
+    )
+    docs_by_book = {str(row[0]): row[1] for row in book_result}
+    total_books = len(docs_by_book)
 
     return SystemMetrics(
         total_documents=total_docs,
@@ -73,7 +78,9 @@ async def get_metrics(
         total_embeddings=total_embeddings,
         total_users=total_users,
         total_queries=total_queries,
+        total_books=total_books,
         documents_by_status=docs_by_status,
+        documents_by_book=docs_by_book,
         avg_query_latency_ms=None,
     )
 
@@ -140,7 +147,7 @@ async def update_user(
     db.add(AuditLog(
         id=uuid.uuid4(),
         user_id=current_user.user_id,
-        action=AuditAction.UPDATE_USER,
+        action="update_user",
         resource="users",
         resource_id=str(user_id),
         tenant_id=current_user.tenant_id,
@@ -157,27 +164,17 @@ async def update_user(
         username=user.username,
         full_name=user.full_name,
         is_active=user.is_active,
-        role=role.name.value,
+        role=role.name,
         tenant_id=user.tenant_id,
         created_at=user.created_at,
     )
-
-
-@router.post("/evaluate")
-async def run_evaluation(
-    current_user: CurrentUser = Depends(require_roles(["admin"])),
-):
-    """Run the RAG evaluation suite. Admin only."""
-    runner = EvaluationRunner(tenant_id=current_user.tenant_id)
-    summary = await runner.run_evaluation()
-    return runner.to_dict(summary)
 
 
 @router.get("/cache/health")
 async def cache_health(
     current_user: CurrentUser = Depends(require_roles(["admin"])),
 ):
-    """Check Redis cache health."""
+    """Check cache health."""
     from app.core.cache import get_cache
     try:
         cache = await get_cache()

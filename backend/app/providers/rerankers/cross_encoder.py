@@ -1,6 +1,7 @@
 """Cross-encoder reranker provider."""
 
 import logging
+import math
 import time
 from typing import List, Dict, Any
 
@@ -16,18 +17,17 @@ class CrossEncoderReranker(BaseReranker):
 
     _instances: Dict[str, "CrossEncoderReranker"] = {}
 
-    def __init__(self, model_name: str, device: str = "cpu", batch_size: int = 16):
+    def __init__(self, model_name: str):
         self._model_name = model_name
-        self._batch_size = batch_size
         logger.info(f"Loading cross-encoder reranker: {model_name}")
-        self._model = CrossEncoder(model_name, device=device)
+        self._model = CrossEncoder(model_name)
         logger.info(f"Cross-encoder reranker loaded: {model_name}")
 
     @classmethod
-    def get_instance(cls, model_name: str, device: str = "cpu", batch_size: int = 16) -> "CrossEncoderReranker":
+    def get_instance(cls, model_name: str) -> "CrossEncoderReranker":
         """Singleton per model name to avoid reloading."""
         if model_name not in cls._instances:
-            cls._instances[model_name] = cls(model_name, device, batch_size)
+            cls._instances[model_name] = cls(model_name)
         return cls._instances[model_name]
 
     def rerank(self, query: str, documents: List[Dict[str, Any]], top_k: int = 5) -> List[Dict[str, Any]]:
@@ -39,12 +39,13 @@ class CrossEncoderReranker(BaseReranker):
 
         scores = self._model.predict(
             pairs,
-            batch_size=self._batch_size,
+            batch_size=16,
             show_progress_bar=False,
         )
 
         for doc, score in zip(documents, scores):
-            doc["rerank_score"] = float(score)
+            s = float(score)
+            doc["rerank_score"] = s if not math.isnan(s) else 0.0
 
         documents.sort(key=lambda x: x.get("rerank_score", 0), reverse=True)
 
