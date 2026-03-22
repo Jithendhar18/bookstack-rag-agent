@@ -88,6 +88,91 @@ Optional parameters:
 
 Provide `session_id` from a previous response to continue a conversation.
 
+The response includes the answer and source links:
+
+```json
+{
+  "answer": "Authentication is configured by...",
+  "session_id": "933d92b1-xxxx",
+  "latency_ms": 2340.5,
+  "sources": [
+    {
+      "document_title": "Auth Setup Guide",
+      "source_url": "http://localhost:6875/books/my-book/page/auth-setup"
+    }
+  ]
+}
+```
+
+`source_url` is the direct BookStack page link. Save `session_id` and pass it in the next request to continue the same conversation.
+
+### Streaming query
+
+```bash
+curl -X POST http://localhost:8000/api/v1/query/stream \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "How do I set up authentication?"}' \
+  --no-buffer
+```
+
+Events are emitted per pipeline node (`input`, `retriever`, `reranker`, `llm_reasoning`, `response`). The answer and sources appear in the `llm_reasoning` event. Streaming does **not** save messages to chat history.
+
+## Chat History
+
+### List your sessions
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/api/v1/query/history?page=1&page_size=20"
+```
+
+Response:
+```json
+[
+  { "id": "uuid", "title": "Who is Rama?", "message_count": 4, "last_message_at": "2026-03-22T12:46:23Z", "created_at": "2026-03-22T12:44:01Z" }
+]
+```
+
+### Get a full session (messages + source links)
+
+```bash
+SESSION_ID="<session_id from history list>"
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/api/v1/query/history/$SESSION_ID"
+```
+
+Each assistant message includes `sources` with `source_url` — the direct BookStack page link.
+
+### Delete a session
+
+```bash
+curl -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/api/v1/query/history/$SESSION_ID"
+# Returns 204 No Content
+```
+
+## Popular Questions (Admin / Developer)
+
+```bash
+ADMIN_TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin1234"}' \
+  | python -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "http://localhost:8000/api/v1/query/popular?limit=10"
+```
+
+Response:
+```json
+[
+  { "query": "Who is Rama?", "count": 12, "last_asked_at": "2026-03-22T12:46:23Z" }
+]
+```
+
+Aggregated from audit logs — only queries made via `POST /query` (non-streaming) are counted.
+
 ## Resetting the Database & Vector Store
 
 To completely clear all data (PostgreSQL + Qdrant):

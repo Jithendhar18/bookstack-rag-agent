@@ -109,7 +109,7 @@ async def list_users(
             username=user.username,
             full_name=user.full_name,
             is_active=user.is_active,
-            role=role_name.value,
+            role=role_name,
             tenant_id=user.tenant_id,
             created_at=user.created_at,
         )

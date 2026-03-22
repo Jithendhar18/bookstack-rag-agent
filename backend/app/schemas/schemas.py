@@ -185,8 +185,25 @@ class ChatSessionResponse(BaseModel):
     title: Optional[str]
     messages: List[ChatMessageSchema] = []
     created_at: datetime
+    updated_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
+
+
+class ChatSessionListItem(BaseModel):
+    id: UUID
+    title: Optional[str]
+    message_count: int
+    last_message_at: Optional[datetime]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class FrequentQuestion(BaseModel):
+    query: str
+    count: int
+    last_asked_at: datetime
 
 
 # ─── Admin / Metrics ────────────────────────────────────────────────────────

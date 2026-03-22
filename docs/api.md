@@ -8,6 +8,16 @@ All routes (except `/health*` and auth endpoints) are prefixed with `/api/v1`.
 
 ---
 
+## Role System
+
+| Role | Description |
+|---|---|
+| `admin` | Full access — all endpoints |
+| `developer` | Can trigger ingestion and view popular questions |
+| `user` | Can query, view and manage own chat history |
+
+---
+
 ## Authentication
 
 All endpoints except `/health`, `/health/detailed`, `POST /api/v1/auth/login`, and `POST /api/v1/auth/register` require a Bearer token:
@@ -15,6 +25,8 @@ All endpoints except `/health`, `/health/detailed`, `POST /api/v1/auth/login`, a
 ```
 Authorization: Bearer <access_token>
 ```
+
+Access tokens expire after 30 minutes (1800 s). Use the refresh endpoint before expiry to get a new pair without forcing the user to log in again.
 
 ### POST /api/v1/auth/register
 
@@ -30,6 +42,14 @@ Request:
   "tenant_id": "default"
 }
 ```
+
+| Field | Required | Notes |
+|---|---|---|
+| `email` | Yes | Valid email format |
+| `username` | Yes | Unique, used for login |
+| `password` | Yes | Minimum 8 characters |
+| `full_name` | No | Display name |
+| `tenant_id` | No | Defaults to `"default"` |
 
 Response `201`:
 ```json
@@ -67,11 +87,11 @@ Response `200`:
 }
 ```
 
-`expires_in` is in seconds (default: 30 minutes = 1800 s).
+`expires_in` is in seconds (default: 30 minutes = 1800 s). Store both tokens — use `access_token` for API calls, and call `/auth/refresh` with the `refresh_token` before the access token expires.
 
 ### POST /api/v1/auth/refresh
 
-Exchange a refresh token for a new access + refresh token pair.
+Exchange a refresh token for a new access + refresh token pair. Call this automatically when the access token is about to expire (e.g. within 60 s of expiry).
 
 Request:
 ```json
@@ -95,6 +115,8 @@ Response `200`: same shape as the `UserResponse` from `/register`.
 ### POST /api/v1/query
 
 Ask a question against the ingested documentation. Requires authentication.
+
+Creates a new chat session automatically if `session_id` is not provided. The returned `session_id` can be passed in subsequent requests to maintain conversation context.
 
 Request:
 ```json
@@ -120,10 +142,10 @@ Response `200`:
   "sources": [
     {
       "chunk_id": "abc-123",
-      "document_title": "Authentication Setup",
-      "content": "...",
+      "document_title": "Ramayana.pdf - Part 74",
+      "content": "Excerpt from the chunk...",
       "score": 0.85,
-      "source_url": null,
+      "source_url": "http://your-bookstack/books/my-book/page/page-slug",
       "metadata": {}
     }
   ],
@@ -132,6 +154,8 @@ Response `200`:
   "latency_ms": 1234.5
 }
 ```
+
+`source_url` is the direct link to the BookStack page (e.g. `http://localhost:6875/books/my-book/page/my-page`). Use this to build clickable references in the UI. `session_id` must be saved and passed back in subsequent requests to maintain a multi-turn conversation.
 
 ### POST /api/v1/query/stream
 
@@ -143,6 +167,99 @@ Each SSE event carries:
 ```
 
 Final event: `data: [DONE]`
+
+Streaming does **not** persist messages to the database. Use `POST /query` (non-streaming) for conversations that need history.
+
+---
+
+## Chat History
+
+All history endpoints are scoped to the authenticated user — users can only access their own sessions.
+
+### GET /api/v1/query/history
+
+List the current user's chat sessions, newest first. Paginated.
+
+Query params: `page` (default 1), `page_size` (default 20, max 100).
+
+Response `200`:
+```json
+[
+  {
+    "id": "uuid",
+    "title": "Who is Rama?",
+    "message_count": 4,
+    "last_message_at": "2026-03-22T12:46:23Z",
+    "created_at": "2026-03-22T12:44:01Z"
+  }
+]
+```
+
+`title` is auto-set to the first 100 characters of the first query in the session. `message_count` counts both user and assistant turns.
+
+### GET /api/v1/query/history/{session_id}
+
+Return a full chat session including all messages and source links.
+
+Response `200`:
+```json
+{
+  "id": "uuid",
+  "title": "Who is Rama?",
+  "created_at": "2026-03-22T12:44:01Z",
+  "updated_at": "2026-03-22T12:46:23Z",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Who is Rama?",
+      "sources": [],
+      "created_at": "2026-03-22T12:44:01Z"
+    },
+    {
+      "role": "assistant",
+      "content": "Rama is...",
+      "sources": [
+        {
+          "chunk_id": "abc-123",
+          "document_title": "Ramayana.pdf - Part 74",
+          "content": "...",
+          "score": 0.92,
+          "source_url": "http://your-bookstack/books/ramayan/page/ramayanapdf-part-74",
+          "metadata": {}
+        }
+      ],
+      "created_at": "2026-03-22T12:44:03Z"
+    }
+  ]
+}
+```
+
+Returns `404` if the session doesn't belong to the authenticated user.
+
+### DELETE /api/v1/query/history/{session_id}
+
+Delete a chat session and all its messages. Returns `204 No Content`.
+
+Returns `404` if the session doesn't belong to the authenticated user.
+
+### GET /api/v1/query/popular
+
+Return the most frequently asked questions across the tenant. Requires `admin` or `developer` role.
+
+Query params: `limit` (default 10, max 50).
+
+Response `200`:
+```json
+[
+  {
+    "query": "Who is Rama?",
+    "count": 12,
+    "last_asked_at": "2026-03-22T12:46:23Z"
+  }
+]
+```
+
+Data is aggregated from the audit log — only queries made via `POST /query` are counted. Results are ordered by frequency descending.
 
 ---
 
@@ -262,6 +379,10 @@ Request (all fields optional):
 
 Valid roles: `admin`, `developer`, `user`.
 
+### DELETE /api/v1/admin/users/{user_id}
+
+Deactivate (soft-delete) a user. Returns `204 No Content`.
+
 ---
 
 ## Health
@@ -288,3 +409,30 @@ Detailed health check including cache and vector store subsystems.
   }
 }
 ```
+
+---
+
+## Quick Endpoint Reference
+
+| Method | Endpoint | Role Required | Purpose |
+|---|---|---|---|
+| POST | `/api/v1/auth/register` | None | Create account |
+| POST | `/api/v1/auth/login` | None | Get tokens |
+| POST | `/api/v1/auth/refresh` | None | Refresh access token |
+| GET | `/api/v1/auth/me` | Any | Own profile |
+| POST | `/api/v1/query` | Any | RAG query (saves to history) |
+| POST | `/api/v1/query/stream` | Any | Streaming RAG query (SSE, no history) |
+| GET | `/api/v1/query/history` | Any | List own chat sessions |
+| GET | `/api/v1/query/history/{id}` | Owner | Full session with messages + source URLs |
+| DELETE | `/api/v1/query/history/{id}` | Owner | Delete session |
+| GET | `/api/v1/query/popular` | Admin/Developer | Frequent questions across tenant |
+| POST | `/api/v1/ingestion/ingest` | Admin/Developer | Trigger BookStack ingestion |
+| GET | `/api/v1/ingestion/status/{task_id}` | Admin/Developer | Poll ingestion task |
+| GET | `/api/v1/ingestion/documents` | Admin/Developer | List ingested documents |
+| GET | `/api/v1/ingestion/books` | Admin/Developer | List books with counts |
+| GET | `/api/v1/ingestion/books/{book_id}` | Admin/Developer | Book hierarchy |
+| GET | `/api/v1/admin/metrics` | Admin | System-wide stats |
+| GET | `/api/v1/admin/users` | Admin | List users |
+| PATCH | `/api/v1/admin/users/{id}` | Admin | Update user |
+| GET | `/health` | None | Basic health check |
+| GET | `/health/detailed` | None | Full health check |
