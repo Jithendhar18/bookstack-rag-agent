@@ -27,16 +27,6 @@ graph TD
     LG -->|"Generate answer"| LLM
     API -->|"Cache hit?"| Cache
     BS -->|"Pages + HTML"| API
-
-    style Client fill:#e1f5fe,stroke:#0277bd
-    style API fill:#fff3e0,stroke:#ef6c00
-    style LG fill:#f3e5f5,stroke:#7b1fa2
-    style PG fill:#e8f5e9,stroke:#2e7d32
-    style QD fill:#e3f2fd,stroke:#1565c0
-    style EMB fill:#fce4ec,stroke:#c62828
-    style LLM fill:#fff9c4,stroke:#f9a825
-    style BS fill:#efebe9,stroke:#4e342e
-    style Cache fill:#f1f8e9,stroke:#558b2f
 ```
 
 ---
@@ -238,17 +228,6 @@ graph TD
     RV --> RESP
 
     RESP --> END
-
-    style START fill:#c8e6c9,stroke:#2e7d32
-    style END fill:#ffcdd2,stroke:#c62828
-    style INPUT fill:#e1f5fe,stroke:#0277bd
-    style QR fill:#fff3e0,stroke:#ef6c00
-    style RET fill:#e3f2fd,stroke:#1565c0
-    style RR fill:#f3e5f5,stroke:#7b1fa2
-    style CC fill:#fce4ec,stroke:#c62828
-    style LLM fill:#fff9c4,stroke:#f9a825
-    style RV fill:#e8f5e9,stroke:#2e7d32
-    style RESP fill:#efebe9,stroke:#4e342e
 ```
 
 ### Conditional Edges
@@ -346,14 +325,6 @@ graph TD
     db --> PG
     LLM_P --> LLM_EXT
     MW -.->|wraps| API
-
-    style API fill:#fff3e0,stroke:#ef6c00
-    style Core fill:#e1f5fe,stroke:#0277bd
-    style Agents fill:#f3e5f5,stroke:#7b1fa2
-    style Providers fill:#fff9c4,stroke:#f9a825
-    style Ingestion fill:#e8f5e9,stroke:#2e7d32
-    style Storage fill:#efebe9,stroke:#4e342e
-    style External fill:#fce4ec,stroke:#c62828
 ```
 
 ---
@@ -506,9 +477,6 @@ graph LR
         Q2 --> Q3["3. Return scored docs"]
         Q3 --> Q4["4. Source URLs from payload"]
     end
-
-    style PostgreSQL fill:#e8f5e9,stroke:#2e7d32
-    style Qdrant fill:#e3f2fd,stroke:#1565c0
 ```
 
 ---
@@ -529,37 +497,33 @@ sequenceDiagram
     participant LG as LangGraph
     participant LLM as LLM
 
-    rect rgb(232, 245, 233)
-        Note over Admin,PG: Phase 1 — Ingestion
-        Admin->>API: POST /api/v1/ingestion/ingest
-        API-->>Admin: 202 {task_id}
-        API->>BS: Fetch all pages
-        BS-->>API: Pages HTML
-        API->>Pipeline: Parse → Chunk → Embed
-        Pipeline->>EMB: embed_batch(chunks)
-        EMB-->>Pipeline: Vectors
-        Pipeline->>QD: Store vectors + metadata
-        Pipeline->>PG: Store documents + chunks
-    end
+    Note over Admin,PG: Phase 1 — Ingestion
+    Admin->>API: POST /api/v1/ingestion/ingest
+    API-->>Admin: 202 {task_id}
+    API->>BS: Fetch all pages
+    BS-->>API: Pages HTML
+    API->>Pipeline: Parse → Chunk → Embed
+    Pipeline->>EMB: embed_batch(chunks)
+    EMB-->>Pipeline: Vectors
+    Pipeline->>QD: Store vectors + metadata
+    Pipeline->>PG: Store documents + chunks
 
-    rect rgb(227, 242, 253)
-        Note over User,LLM: Phase 2 — Query
-        User->>API: POST /api/v1/query {query}
-        API->>LG: run_agent_query()
-        LG->>LG: Input validation + guardrails
-        LG->>LG: Query rewrite (optional)
-        LG->>EMB: Embed query
-        EMB-->>LG: Query vector
-        LG->>QD: Vector similarity search
-        QD-->>LG: Relevant chunks + scores
-        LG->>LG: Rerank → Compress → Trim
-        LG->>LLM: Prompt with context + query
-        LLM-->>LG: Generated answer
-        LG->>LG: Validate grounding
-        LG-->>API: {answer, sources, metadata}
-        API->>PG: Log session + messages + audit
-        API-->>User: QueryResponse
-    end
+    Note over User,LLM: Phase 2 — Query
+    User->>API: POST /api/v1/query {query}
+    API->>LG: run_agent_query()
+    LG->>LG: Input validation + guardrails
+    LG->>LG: Query rewrite (optional)
+    LG->>EMB: Embed query
+    EMB-->>LG: Query vector
+    LG->>QD: Vector similarity search
+    QD-->>LG: Relevant chunks + scores
+    LG->>LG: Rerank → Compress → Trim
+    LG->>LLM: Prompt with context + query
+    LLM-->>LG: Generated answer
+    LG->>LG: Validate grounding
+    LG-->>API: {answer, sources, metadata}
+    API->>PG: Log session + messages + audit
+    API-->>User: QueryResponse
 ```
 
 ---
@@ -596,10 +560,6 @@ graph TD
     MODE -->|"dense"| D1 --> D2 --> D3
     MODE -->|"keyword"| K1 --> K2
     MODE -->|"hybrid"| H1 --> H2 --> H3 --> H4
-
-    style Dense fill:#e3f2fd,stroke:#1565c0
-    style Keyword fill:#fff3e0,stroke:#ef6c00
-    style Hybrid fill:#f3e5f5,stroke:#7b1fa2
 ```
 
 ---
