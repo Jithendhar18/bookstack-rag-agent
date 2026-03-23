@@ -6,6 +6,7 @@ enable/disable toggles from the environment configuration.
 
 import logging
 import math
+import re
 import time
 from typing import Dict, Any, List
 
@@ -22,16 +23,15 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-SYSTEM_PROMPT = """You are a knowledgeable AI assistant that answers questions based on documentation from BookStack.
+SYSTEM_PROMPT = """You are a helpful assistant that answers questions using the provided documentation.
 
-INSTRUCTIONS:
-- Answer questions accurately using ONLY the provided context documents.
-- If the context doesn't contain enough information, say so clearly.
-- Cite your sources by referencing document titles.
-- Be concise but thorough.
-- If asked about something not in the provided context, state that the information is not available in the current documentation.
+RULES:
+- Use the context below to answer the user's question.
+- Synthesize information into a coherent answer.
+- If the documents don't contain relevant information, say so.
+- Give direct, clear answers.
 
-CONTEXT DOCUMENTS:
+CONTEXT:
 {context}
 """
 
@@ -65,6 +65,43 @@ class AgentNodes:
         except Exception:
             self._tokenizer = tiktoken.get_encoding("cl100k_base")
 
+    @staticmethod
+    def _is_greeting(text: str) -> bool:
+        """Fuzzy-match greetings, handles typos and variations."""
+        import difflib
+        clean = re.sub(r"[^a-z\s]", "", text.lower()).strip()
+        words = clean.split()
+
+        greetings = [
+            "hi", "hello", "hey", "yo", "sup", "hola", "howdy",
+            "hii", "hiii", "heya", "helo", "hellow",
+            "thanks", "thank you", "thankyou", "thx",
+            "ok", "okay", "bye", "goodbye", "cya",
+            "good morning", "good evening", "good afternoon", "good night",
+            "good mornign", "good mornin", "gm", "gn",
+            "whats up", "wassup", "wazzup",
+        ]
+
+        # Exact match
+        if clean in greetings:
+            return True
+
+        # Single word — fuzzy match against greeting words
+        if len(words) == 1:
+            single_greetings = [g for g in greetings if " " not in g]
+            matches = difflib.get_close_matches(clean, single_greetings, n=1, cutoff=0.7)
+            if matches:
+                return True
+
+        # Multi-word — fuzzy match the full phrase
+        if len(words) >= 2:
+            multi_greetings = [g for g in greetings if " " in g]
+            matches = difflib.get_close_matches(clean, multi_greetings, n=1, cutoff=0.65)
+            if matches:
+                return True
+
+        return False
+
     # ─── Input Node ──────────────────────────────────────────────────────
 
     @traceable(name="input_node")
@@ -73,6 +110,15 @@ class AgentNodes:
         query = state["query"].strip()
         if not query:
             return {"error": "Empty query", "answer": "Please provide a question."}
+
+        # Handle greetings and non-questions instantly (skip heavy pipeline)
+        if len(query.split()) <= 4 and self._is_greeting(query):
+            return {
+                "error": "greeting",
+                "answer": "Hello! Ask me anything about the documentation and I'll help you find answers.",
+                "sources": [],
+                "metadata": {"start_time": time.time()},
+            }
 
         # Guardrails: prompt injection check (skipped if GUARDRAILS_ENABLED=false)
         injection_check = self.guardrails.check_prompt_injection(query)
@@ -336,22 +382,50 @@ class AgentNodes:
         # Build context from documents
         context_parts = []
         sources = []
+
+        # Collect raw scores for normalization
+        raw_scores = []
+        for doc in documents:
+            s = doc.get("rerank_score", doc.get("score", 0))
+            if isinstance(s, (int, float)) and not math.isnan(s):
+                raw_scores.append(s)
+            else:
+                raw_scores.append(0.0)
+
+        # Normalize scores to 0-1 range for display
+        max_raw = max(raw_scores) if raw_scores else 1.0
+        min_raw = min(raw_scores) if raw_scores else 0.0
+        score_range = max_raw - min_raw if max_raw != min_raw else 1.0
+
         for i, doc in enumerate(documents):
             title = doc.get("metadata", {}).get("title", f"Document {i+1}")
             text = doc.get("text", "")
-            context_parts.append(f"[{i+1}] {title}\n{text}")
-            score = doc.get("rerank_score", doc.get("score", 0))
+            context_parts.append(f"{title}\n{text}")
+
+            # Normalize to 0-1
+            raw = raw_scores[i] if i < len(raw_scores) else 0.0
+            if max_raw > 0 and max_raw > 1:
+                # Raw scores are unnormalized (e.g. reranker logits) — normalize
+                normalized = (raw - min_raw) / score_range
+            else:
+                # Already 0-1 (e.g. cosine similarity)
+                normalized = max(0.0, min(1.0, raw))
+
             doc_meta = doc.get("metadata", {})
             sources.append({
                 "chunk_id": doc.get("id", ""),
                 "document_title": title,
                 "content": text[:500],
-                "score": score if isinstance(score, (int, float)) and not math.isnan(score) else 0.0,
+                "score": round(normalized, 4),
                 "source_url": doc_meta.get("source_url"),
                 "metadata": doc_meta,
             })
 
         context = "\n\n---\n\n".join(context_parts) if context_parts else "No relevant documents found."
+
+        # Only return sources with positive confidence to the user
+        # Filter by score > 0.4 (meaningful relevance), then cap at 3
+        sources = [s for s in sources if s["score"] > 0.4][:3]
 
         system_msg = SystemMessage(content=SYSTEM_PROMPT.format(context=context))
 

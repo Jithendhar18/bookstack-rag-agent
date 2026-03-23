@@ -135,34 +135,120 @@ async def query(
 async def query_stream(
     request: QueryRequest,
     current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Stream query results via SSE (Server-Sent Events)."""
+    """Stream query results via SSE (Server-Sent Events).
+
+    Yields node-level events as they complete. The final event includes
+    the session_id so the UI can track the conversation.
+    """
     if not settings.STREAMING_ENABLED:
         raise HTTPException(status_code=400, detail="Streaming is disabled")
 
+    # Get or create chat session upfront (before streaming starts)
+    session_id = request.session_id
+    if session_id:
+        result = await db.execute(
+            select(ChatSession).where(
+                ChatSession.id == session_id,
+                ChatSession.user_id == current_user.user_id,
+            )
+        )
+        session = result.scalar_one_or_none()
+        if session is None:
+            raise HTTPException(status_code=404, detail="Chat session not found")
+    else:
+        session = ChatSession(
+            id=uuid.uuid4(),
+            user_id=current_user.user_id,
+            title=request.query[:100],
+            tenant_id=current_user.tenant_id,
+        )
+        db.add(session)
+        await db.flush()
+        session_id = session.id
+        await db.commit()
+
+    # Capture values for use in generator (avoid closing over db session)
+    user_id = current_user.user_id
+    tenant_id = current_user.tenant_id
+    query_text = request.query
+    start = time.time()
+
     async def event_generator():
+        from app.db.session import AsyncSessionLocal
+
+        final_answer = ""
+        final_sources = []
+
         try:
             async for event in stream_agent_query(
-                query=request.query,
-                tenant_id=current_user.tenant_id,
-                session_id=str(request.session_id) if request.session_id else None,
+                query=query_text,
+                tenant_id=tenant_id,
+                session_id=str(session_id),
             ):
                 node = event.get("node", "unknown")
                 data = event.get("data", {})
 
-                # Yield progress events for each node
+                answer = data.get("answer", "")
+                sources = data.get("sources", [])
+
+                if answer:
+                    final_answer = answer
+                if sources:
+                    final_sources = sources
+
                 payload = {
                     "node": node,
-                    "answer": data.get("answer", ""),
-                    "sources": data.get("sources", []),
+                    "answer": answer,
+                    "sources": sources,
                     "metadata": data.get("metadata", {}),
+                    "session_id": str(session_id),
                 }
                 yield f"data: {json.dumps(payload, default=str)}\n\n"
 
-            yield "data: [DONE]\n\n"
         except Exception as e:
             logger.error(f"Streaming error: {e}")
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'error': str(e), 'session_id': str(session_id)})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        latency_ms = (time.time() - start) * 1000
+
+        # Save messages with a fresh DB session (generator outlives the request session)
+        if final_answer:
+            try:
+                async with AsyncSessionLocal() as save_db:
+                    save_db.add(ChatMessage(
+                        id=uuid.uuid4(),
+                        session_id=session_id,
+                        role="user",
+                        content=query_text,
+                        token_count=len(query_text.split()),
+                    ))
+                    save_db.add(ChatMessage(
+                        id=uuid.uuid4(),
+                        session_id=session_id,
+                        role="assistant",
+                        content=final_answer,
+                        sources=final_sources,
+                        token_count=len(final_answer.split()),
+                    ))
+                    save_db.add(AuditLog(
+                        id=uuid.uuid4(),
+                        user_id=user_id,
+                        action="query",
+                        resource="query",
+                        details={"query": query_text[:200], "latency_ms": latency_ms},
+                        tenant_id=tenant_id,
+                    ))
+                    await save_db.commit()
+            except Exception as e:
+                logger.error(f"Failed to save streamed messages: {e}")
+                yield f"data: {json.dumps({'error': 'Response generated but failed to save to history', 'session_id': str(session_id)})}\n\n"
+
+        yield f"data: {json.dumps({'node': 'done', 'session_id': str(session_id), 'latency_ms': latency_ms})}\n\n"
+        yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         event_generator(),
