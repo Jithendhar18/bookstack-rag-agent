@@ -1,5 +1,141 @@
 # Setup Guide
 
+## Project Structure
+
+```
+bookstack-rag-agent/
+├── backend/                    # Python FastAPI backend
+│   ├── app/
+│   │   ├── routes/            # ⭐ HTTP handlers (thin layer)
+│   │   │   ├── __init__.py
+│   │   │   ├── health_routes.py      # GET /health, /health/detailed
+│   │   │   ├── auth_routes.py        # POST /login, /register, /refresh + GET /me
+│   │   │   ├── query_routes.py       # POST /query, /query/stream
+│   │   │   ├── ingestion_routes.py   # POST /ingest, GET /status, /documents, /books/*
+│   │   │   └── admin_routes.py       # GET /metrics, /users; PATCH /users/{id}
+│   │   │
+│   │   ├── services/          # ⭐ Business logic layer
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py               # BaseService (async session injection)
+│   │   │   ├── auth_service.py       # Auth ops (register, login, token refresh)
+│   │   │   ├── query_service.py      # Chat sessions & message management
+│   │   │   ├── ingestion_service.py  # Ingestion validation & doc listing
+│   │   │   └── admin_service.py      # Metrics, user management, reports
+│   │   │
+│   │   ├── repositories/      # ⭐ Data access layer (SQL queries only)
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py               # BaseRepository[T] generic CRUD
+│   │   │   ├── user_repository.py    # User-specific queries
+│   │   │   ├── role_repository.py    # Role queries
+│   │   │   ├── document_repository.py # Document & Chunk queries
+│   │   │   ├── chat_repository.py    # ChatSession & ChatMessage queries
+│   │   │   └── audit_log_repository.py # Audit queries
+│   │   │
+│   │   ├── agents/            # LangGraph RAG pipeline
+│   │   │   ├── graph.py
+│   │   │   ├── nodes.py       # 8 pipeline nodes
+│   │   │   └── state.py       # AgentState TypedDict
+│   │   │
+│   │   ├── auth/              # JWT, password hashing, auth guards
+│   │   │   ├── dependencies.py # CurrentUser, require_roles()
+│   │   │   ├── jwt_handler.py
+│   │   │   └── password.py
+│   │   │
+│   │   ├── core/              # Utilities & cross-cutting concerns
+│   │   │   ├── cache.py       # In-memory cache (TTL)
+│   │   │   ├── exceptions.py  # Custom exceptions
+│   │   │   ├── guardrails.py  # Prompt injection, grounding
+│   │   │   ├── logging_config.py
+│   │   │   ├── middleware.py  # RequestContext, CORS
+│   │   │
+│   │   ├── db/                # Database layer
+│   │   │   ├── models.py      # SQLAlchemy ORM (User, Document, Chunk, etc.)
+│   │   │   ├── session.py     # Async session factory
+│   │   │   └── seed.py        # Database seeding (default roles, admin user)
+│   │   │
+│   │   ├── ingestion/         # BookStack connector & chunking
+│   │   │   ├── bookstack_client.py # BookStack API client
+│   │   │   ├── content_parser.py   # HTML → text normalization
+│   │   │   ├── chunker.py         # Semantic chunking
+│   │   │   └── pipeline.py        # Orchestration
+│   │   │
+│   │   ├── providers/         # LLM, embeddings, rerankers (pluggable)
+│   │   │   ├── factory.py     # Provider singletons
+│   │   │   ├── base.py        # Abstract base classes
+│   │   │   ├── llm/           # OpenAI, Ollama, OpenRouter
+│   │   │   ├── embeddings/    # SentenceTransformers
+│   │   │   ├── rerankers/     # CrossEncoder
+│   │   │   └── retrievers/    # Dense, keyword, hybrid search
+│   │   │
+│   │   ├── retrieval/         # Vector store management
+│   │   │   └── vector_store.py # Qdrant client wrapper
+│   │   │
+│   │   ├── schemas/           # Pydantic v2 models
+│   │   │   └── schemas.py     # All request/response types
+│   │   │
+│   │   └── __init__.py
+│   │
+│   ├── main.py                # FastAPI app factory & startups
+│   ├── config.py              # Settings loader (environment variables)
+│   ├── requirements.txt
+│   ├── alembic/               # Database migrations
+│   └── .env.example
+│
+├── docs/                      # Documentation
+│   ├── setup.md              # This file
+│   ├── api.md                # Endpoint reference
+│   ├── architecture.md       # System design & data flow
+│   ├── frontend-integration.md # React/TypeScript integration guide
+│   ├── technical-review.md
+│   └── usage.md
+│
+├── docker/
+│   └── Dockerfile
+│
+├── scripts/
+│   ├── reset_db.sh           # Clear database + vector store
+│   └── seed_db.py            # Populate default data
+│
+├── docker-compose.yml        # Postgres + Qdrant
+├── README.md
+└── venv/                      # Python virtual environment
+```
+
+## Architecture Layers
+
+The backend follows **3-layer clean architecture**:
+
+### 1. Routes Layer (`app/routes/`)
+- **Responsibility**: HTTP handling only
+- **What they do**: Parse requests, call services, serialize responses
+- **No database access**: All DB calls go through services
+- **Examples**: `auth_routes.py`, `ingestion_routes.py`
+
+### 2. Services Layer (`app/services/`)
+- **Responsibility**: Business logic & orchestration
+- **What they do**: Validate, transform data, call repositories, manage transactions
+- **Examples**: `AuthService` (login/register), `IngestionService` (document listing)
+
+### 3. Repositories Layer (`app/repositories/`)
+- **Responsibility**: Data access (SQL queries only)
+- **What they do**: `SELECT`, `INSERT`, `UPDATE`, `DELETE` operations
+- **One class per model**: `UserRepository`, `DocumentRepository`, `ChunkRepository`
+- **Examples**: `get_by_id()`, `get_documents_paginated()`, `count_by_tenant()`
+
+---
+
+## Key Changes from Old Code
+
+| Aspect | Old | New |
+|--------|-----|-----|
+| **Routes location** | `app/api/` (deleted) | `app/routes/` ✅ |
+| **Services** | Mixed in routes | `app/services/` (dedicated) ✅ |
+| **Repositories** | Didn't exist | `app/repositories/` (new) ✅ |
+| **Database queries** | In services/routes | In repositories only ✅ |
+| **Testing** | Hard to unit test | Easy - each layer is isolated ✅ |
+
+---
+
 ## Prerequisites
 
 - Python 3.11+

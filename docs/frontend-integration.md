@@ -147,13 +147,152 @@ GET /query/popular?limit=10
 Response: [{ "query": "Who is Rama?", "count": 12, "last_asked_at": "..." }]
 Show as "Trending Questions" on admin dashboard.
 
+### Ingestion (role: admin or developer)
+
+// Trigger ingestion
+POST /ingestion/ingest
+Body: { "bookstack_type": "pages", "bookstack_ids": null, "force_reindex": false }
+Response: { "task_id": "uuid", "status": "queued", "documents_queued": 0 }
+
+// Poll task status
+GET /ingestion/status/{task_id}
+Response: { "status": "PROGRESS" | "SUCCESS" | "FAILURE", "progress": "...", "result": {} }
+
+// Tenant-level document counts by status
+GET /ingestion/status
+Response: { "pending": 0, "processing": 2, "completed": 40, "failed": 1, "total": 43 }
+
+// List documents with filters
+GET /ingestion/documents?page=1&page_size=20&status=completed&book_id=3
+Response: DocumentResponse[]
+
+// List all books with page and chunk counts
+GET /ingestion/books
+Response: BookSummaryResponse[]
+
+// Full book hierarchy (Book → Chapter → Page)
+GET /ingestion/books/{book_id}
+Response: BookHierarchyResponse
+
 ### Metrics (role: admin)
 GET /admin/metrics
-Response: { "total_documents": 42, "total_chunks": 1234, "total_users": 3, "total_queries": 99, "total_books": 5 }
+Response: { "total_documents": 42, "total_chunks": 1234, "total_users": 3, "total_queries": 99, "total_books": 5, "total_embeddings": 1234, "documents_by_status": {}, "documents_by_book": {}, "avg_query_latency_ms": null }
 
 ### User management (role: admin)
 GET  /admin/users?page=1&page_size=20
 PATCH /admin/users/{id}   Body: { "role": "developer", "is_active": true, "full_name": "New Name" }
+
+---
+
+## INGESTION MANAGEMENT (Admin/Developer only)
+
+### Trigger ingestion
+POST /ingestion/ingest
+Body: { "bookstack_type": "pages", "bookstack_ids": null, "force_reindex": false }
+Response: { "task_id": "uuid", "status": "queued", "documents_queued": 0 }
+→ bookstack_ids: null = ingest all; [1,2,3] = ingest specific page IDs
+
+### Poll task progress (poll every 2-3s until SUCCESS or FAILURE)
+GET /ingestion/status/{task_id}
+Response:
+  { "status": "PROGRESS", "progress": "initializing", "result": null }        ← in progress
+  { "status": "SUCCESS",  "progress": "completed", "result": { "stats": {} }} ← done
+  { "status": "FAILURE",  "progress": "failed",    "result": { "error": "" }} ← failed
+
+### Tenant document counts by status (dashboard summary card)
+GET /ingestion/status
+Response: { "pending": 0, "processing": 2, "completed": 40, "failed": 1, "total": 43 }
+
+### Browse ingested documents (filterable table)
+GET /ingestion/documents?page=1&page_size=20&status=completed&book_id=3
+Results ordered: book → chapter → title
+Response: DocumentResponse[]
+
+### List all books (sidebar / dropdown)
+GET /ingestion/books
+Response: [{ "book_id": 1, "book_name": "My Book", "page_count": 10, "chunk_count": 200 }]
+
+### Full book structure (drill-down tree view)
+GET /ingestion/books/{book_id}
+Response:
+{
+  "book_id": 1,
+  "book_name": "My Book",
+  "total_pages": 10,
+  "total_chunks": 200,
+  "chapters": [
+    {
+      "chapter_id": 5,
+      "chapter_name": "Getting Started",
+      "page_count": 3,
+      "pages": [
+        {
+          "id": "uuid",
+          "bookstack_id": 42,
+          "title": "Installation",
+          "slug": "installation",
+          "chapter_id": 5,
+          "chapter_name": "Getting Started",
+          "status": "completed",
+          "chunk_count": 18,
+          "source_url": "http://your-bookstack/books/my-book/page/installation",
+          "ingested_at": "2026-03-29T10:00:00Z",
+          "created_at": "2026-03-29T09:55:00Z"
+        }
+      ]
+    },
+    {
+      "chapter_id": null,
+      "chapter_name": null,
+      "page_count": 2,
+      "pages": [...]   ← pages with no chapter (direct book pages)
+    }
+  ]
+}
+
+### TypeScript ingestion helpers
+async function triggerIngestion(force = false) {
+  const { data } = await api.post<IngestResponse>("/ingestion/ingest", {
+    bookstack_type: "pages",
+    bookstack_ids: null,
+    force_reindex: force,
+  });
+  return data.task_id;
+}
+
+async function pollIngestionTask(taskId: string): Promise<IngestionTaskStatus> {
+  const { data } = await api.get<IngestionTaskStatus>(`/ingestion/status/${taskId}`);
+  return data;
+}
+
+// Example: trigger and poll until done
+async function runIngestion() {
+  const taskId = await triggerIngestion();
+  while (true) {
+    await new Promise(r => setTimeout(r, 2500));  // wait 2.5s
+    const status = await pollIngestionTask(taskId);
+    setIngestionStatus(status);
+    if (status.status === "SUCCESS" || status.status === "FAILURE") break;
+  }
+}
+
+async function fetchBooks(): Promise<BookSummaryResponse[]> {
+  const { data } = await api.get<BookSummaryResponse[]>("/ingestion/books");
+  return data;
+}
+
+async function fetchBookHierarchy(bookId: number): Promise<BookHierarchyResponse> {
+  const { data } = await api.get<BookHierarchyResponse>(`/ingestion/books/${bookId}`);
+  return data;
+}
+
+async function fetchDocuments(page = 1, bookId?: number, status?: string) {
+  const params = new URLSearchParams({ page: String(page), page_size: "20" });
+  if (bookId) params.set("book_id", String(bookId));
+  if (status) params.set("status", status);
+  const { data } = await api.get<DocumentResponse[]>(`/ingestion/documents?${params}`);
+  return data;
+}
 
 ---
 
@@ -197,6 +336,50 @@ interface AdminMetrics {
   total_documents: number; total_chunks: number; total_embeddings: number;
   total_users: number; total_queries: number; total_books: number;
   documents_by_status: Record<string, number>; documents_by_book: Record<string, number>;
+  avg_query_latency_ms: number | null;
+}
+
+interface IngestResponse { task_id: string; status: string; documents_queued: number; }
+
+interface IngestionTaskStatus {
+  status: "PROGRESS" | "SUCCESS" | "FAILURE";
+  progress: string | null;
+  result: { status: string; stats?: Record<string, unknown>; error?: string } | null;
+}
+
+interface IngestionTenantStatus {
+  pending: number; processing: number; completed: number; failed: number; total: number;
+}
+
+interface DocumentResponse {
+  id: string; bookstack_id: number; bookstack_type: string;
+  title: string; status: string; chunk_count: number;
+  book_id: number | null; book_name: string | null;
+  chapter_id: number | null; chapter_name: string | null;
+  ingested_at: string | null; created_at: string;
+}
+
+interface BookSummaryResponse {
+  book_id: number; book_name: string | null;
+  page_count: number; chunk_count: number;
+}
+
+interface PageSummaryResponse {
+  id: string; bookstack_id: number; title: string;
+  slug: string | null; chapter_id: number | null; chapter_name: string | null;
+  status: string; chunk_count: number;
+  source_url: string | null; ingested_at: string | null; created_at: string;
+}
+
+interface ChapterGroupResponse {
+  chapter_id: number | null; chapter_name: string | null;
+  page_count: number; pages: PageSummaryResponse[];
+}
+
+interface BookHierarchyResponse {
+  book_id: number; book_name: string | null;
+  total_pages: number; total_chunks: number;
+  chapters: ChapterGroupResponse[];
 }
 
 ---
@@ -436,4 +619,10 @@ Admin Page:
 | Admin opens dashboard | `GET /admin/metrics` |
 | Admin views trending | `GET /query/popular` |
 | Admin manages users | `GET /admin/users` |
+| Admin/dev triggers ingestion | `POST /ingestion/ingest` |
+| Admin/dev polls ingestion task | `GET /ingestion/status/{task_id}` |
+| Admin/dev views tenant doc counts | `GET /ingestion/status` |
+| Admin/dev browses documents | `GET /ingestion/documents` |
+| Admin/dev lists books | `GET /ingestion/books` |
+| Admin/dev views book structure | `GET /ingestion/books/{book_id}` |
 | Any 401 received | `POST /auth/refresh` |

@@ -98,14 +98,15 @@ class IngestResponse(BaseModel):
     task_id: str
     status: str
     documents_queued: int
-    message: str
+    message: Optional[str] = None
 
 
 class IngestionStatusResponse(BaseModel):
-    task_id: str
-    status: str
-    progress: Optional[str] = None
-    result: Optional[dict] = None
+    pending: int
+    processing: int
+    completed: int
+    failed: int
+    total: int
 
 
 class DocumentResponse(BaseModel):

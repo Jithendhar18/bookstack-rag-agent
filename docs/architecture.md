@@ -253,14 +253,32 @@ graph TD
 
 ## 5. Module-Level Architecture
 
+The backend follows a strict **three-layer architecture**: Routes → Services → Repositories.
+
 ```mermaid
 graph TD
-    subgraph API["API Layer"]
+    subgraph Routes["Routes Layer (app/routes/)"]
         health["health_routes<br/>/health"]
         auth["auth_routes<br/>/api/v1/auth"]
         query["query_routes<br/>/api/v1/query"]
         ingest["ingestion_routes<br/>/api/v1/ingestion"]
         admin["admin_routes<br/>/api/v1/admin"]
+    end
+
+    subgraph Services["Service Layer (app/services/)"]
+        auth_svc["AuthService<br/>authenticate · register · refresh"]
+        query_svc["QueryService<br/>sessions · messages · audit"]
+        ingest_svc["IngestionService<br/>validate · list_documents<br/>list_books · get_book_hierarchy"]
+        admin_svc["AdminService<br/>metrics · users · roles"]
+    end
+
+    subgraph Repos["Repository Layer (app/repositories/)"]
+        user_repo["UserRepository"]
+        role_repo["RoleRepository"]
+        doc_repo["DocumentRepository<br/>get_documents_paginated<br/>get_books_with_counts<br/>get_documents_by_book"]
+        chunk_repo["ChunkRepository<br/>count_by_document_ids<br/>count_by_book · count_total_for_book"]
+        chat_repo["ChatSessionRepository<br/>ChatMessageRepository"]
+        audit_repo["AuditLogRepository"]
     end
 
     subgraph Core["Core Services"]
@@ -304,28 +322,46 @@ graph TD
         BS_EXT["BookStack API"]
     end
 
-    query --> graph_mod
+    auth --> auth_svc
+    query --> query_svc
+    ingest --> ingest_svc
+    admin --> admin_svc
+
+    auth_svc --> user_repo & role_repo
+    query_svc --> chat_repo & audit_repo
+    ingest_svc --> doc_repo & chunk_repo
+    admin_svc --> user_repo & role_repo & doc_repo & chunk_repo & audit_repo
+
+    query_svc --> graph_mod
     graph_mod --> nodes
     nodes --> state
     nodes --> factory
     factory --> LLM_P & EMB_P & RR_P & RET_P
     nodes --> GR
     RET_P --> vs
-    ingest --> pipe
+    ingest_svc --> pipe
     pipe --> bsclient & parser & chunker
     pipe --> factory
     pipe --> vs
     pipe --> db
     bsclient --> BS_EXT
     auth --> jwt
-    admin --> db
     query --> CA
-    query --> db
     vs --> QD
     db --> PG
     LLM_P --> LLM_EXT
-    MW -.->|wraps| API
+    MW -.->|wraps| Routes
 ```
+
+### Layer Responsibilities
+
+| Layer | Location | Responsibility |
+|---|---|---|
+| **Routes** | `app/routes/` | HTTP parsing, auth guards, response serialization. No DB access. |
+| **Services** | `app/services/` | Business logic, orchestration, data transformation. |
+| **Repositories** | `app/repositories/` | All SQL queries. One class per model. |
+| **Models** | `app/db/models.py` | SQLAlchemy ORM definitions. |
+| **Schemas** | `app/schemas/schemas.py` | Pydantic v2 request/response models. |
 
 ---
 

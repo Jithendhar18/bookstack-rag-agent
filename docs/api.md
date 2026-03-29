@@ -305,7 +305,6 @@ Poll the status of a running or completed ingestion task.
 Response `200`:
 ```json
 {
-  "task_id": "uuid",
   "status": "SUCCESS",
   "progress": "completed",
   "result": {
@@ -315,23 +314,105 @@ Response `200`:
 }
 ```
 
-Possible `status` values: `PENDING` (unknown task_id), `PROGRESS`, `SUCCESS`, `FAILURE`.
+Possible `status` values: `PROGRESS`, `SUCCESS`, `FAILURE`. Returns `404` if the `task_id` is unknown.
+
+### GET /api/v1/ingestion/status
+
+Get document counts by processing status for the current tenant. Requires `admin` role.
+
+Response `200`:
+```json
+{
+  "pending": 0,
+  "processing": 2,
+  "completed": 40,
+  "failed": 1,
+  "total": 43
+}
+```
 
 ### GET /api/v1/ingestion/documents
 
-List ingested documents with pagination and optional filters.
+List ingested documents with pagination and optional filters. Requires `admin` or `developer` role.
 
 Query params: `page` (default 1), `page_size` (default 20), `status`, `book_id`.
 
 Results are ordered by `book_id → chapter_id → title`.
 
+Response `200`:
+```json
+[
+  {
+    "id": "uuid",
+    "bookstack_id": 42,
+    "bookstack_type": "page",
+    "title": "Installation",
+    "status": "completed",
+    "chunk_count": 18,
+    "book_id": 1,
+    "book_name": "My Book",
+    "chapter_id": 5,
+    "chapter_name": "Getting Started",
+    "ingested_at": "2026-03-29T10:00:00Z",
+    "created_at": "2026-03-29T09:55:00Z"
+  }
+]
+```
+
 ### GET /api/v1/ingestion/books
 
-List all distinct books that have at least one ingested page, with page and chunk counts.
+List all distinct books that have at least one ingested page, with page and chunk counts. Requires `admin` or `developer` role.
+
+Response `200`:
+```json
+[
+  { "book_id": 1, "book_name": "My Book", "page_count": 10, "chunk_count": 200 }
+]
+```
 
 ### GET /api/v1/ingestion/books/{book_id}
 
-Return a full `Book → Chapter → Page` hierarchy for a given book.
+Return a full `Book → Chapter → Page` hierarchy for a given book. Requires `admin` or `developer` role.
+
+Returns `404` if no ingested pages exist for the book.
+
+Response `200`:
+```json
+{
+  "book_id": 1,
+  "book_name": "My Book",
+  "total_pages": 10,
+  "total_chunks": 200,
+  "chapters": [
+    {
+      "chapter_id": 5,
+      "chapter_name": "Getting Started",
+      "page_count": 3,
+      "pages": [
+        {
+          "id": "uuid",
+          "bookstack_id": 42,
+          "title": "Installation",
+          "slug": "installation",
+          "chapter_id": 5,
+          "chapter_name": "Getting Started",
+          "status": "completed",
+          "chunk_count": 18,
+          "source_url": "http://your-bookstack/books/my-book/page/installation",
+          "ingested_at": "2026-03-29T10:00:00Z",
+          "created_at": "2026-03-29T09:55:00Z"
+        }
+      ]
+    },
+    {
+      "chapter_id": null,
+      "chapter_name": null,
+      "page_count": 2,
+      "pages": []
+    }
+  ]
+}
+```
 
 ---
 
@@ -428,9 +509,10 @@ Detailed health check including cache and vector store subsystems.
 | GET | `/api/v1/query/popular` | Admin/Developer | Frequent questions across tenant |
 | POST | `/api/v1/ingestion/ingest` | Admin/Developer | Trigger BookStack ingestion |
 | GET | `/api/v1/ingestion/status/{task_id}` | Admin/Developer | Poll ingestion task |
-| GET | `/api/v1/ingestion/documents` | Admin/Developer | List ingested documents |
+| GET | `/api/v1/ingestion/status` | Admin | Tenant document counts by status |
+| GET | `/api/v1/ingestion/documents` | Admin/Developer | List ingested documents (filterable) |
 | GET | `/api/v1/ingestion/books` | Admin/Developer | List books with counts |
-| GET | `/api/v1/ingestion/books/{book_id}` | Admin/Developer | Book hierarchy |
+| GET | `/api/v1/ingestion/books/{book_id}` | Admin/Developer | Book → Chapter → Page hierarchy |
 | GET | `/api/v1/admin/metrics` | Admin | System-wide stats |
 | GET | `/api/v1/admin/users` | Admin | List users |
 | PATCH | `/api/v1/admin/users/{id}` | Admin | Update user |

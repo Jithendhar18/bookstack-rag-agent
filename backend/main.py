@@ -13,11 +13,11 @@ from app.core.exceptions import generic_exception_handler
 from app.db.session import init_db
 from app.db.seed import run_seeds
 
-from app.api.health_routes import router as health_router
-from app.api.auth_routes import router as auth_router
-from app.api.ingestion_routes import router as ingestion_router
-from app.api.query_routes import router as query_router
-from app.api.admin_routes import router as admin_router
+from app.routes.health_routes import router as health_router
+from app.routes.auth_routes import router as auth_router
+from app.routes.ingestion_routes import router as ingestion_router
+from app.routes.query_routes import router as query_router
+from app.routes.admin_routes import router as admin_router
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
