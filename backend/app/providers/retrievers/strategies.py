@@ -31,6 +31,7 @@ class DenseRetriever(BaseRetriever):
         )
         if filters:
             results = _apply_filters(results, filters)
+        # Filter by similarity threshold — cosine scores are already 0-1
         results = [r for r in results if r.get("score", 0) >= settings.SIMILARITY_THRESHOLD]
         return results[:top_k]
 
@@ -70,17 +71,18 @@ class HybridRetriever(BaseRetriever):
         dense_results = self._dense.retrieve(query, top_k=top_k, tenant_id=tenant_id)
         keyword_results = self._keyword.retrieve(query, top_k=top_k, tenant_id=tenant_id)
 
+        logger.info(f"Hybrid: {len(dense_results)} dense + {len(keyword_results)} keyword results")
+
         merged = self._rrf_merge(dense_results, keyword_results)
 
         if filters:
             merged = _apply_filters(merged, filters)
 
-        merged = [r for r in merged if r.get("score", 0) >= settings.SIMILARITY_THRESHOLD]
         return merged[:top_k]
 
     def _rrf_merge(self, dense: List[Dict], sparse: List[Dict]) -> List[Dict]:
-        """Reciprocal Rank Fusion merge."""
-        k = 60
+        """Reciprocal Rank Fusion merge with normalized 0-1 output scores."""
+        k = 60  # RRF constant
         scores: Dict[str, float] = {}
         docs: Dict[str, Dict] = {}
 
@@ -95,17 +97,17 @@ class HybridRetriever(BaseRetriever):
             if doc_id not in docs:
                 docs[doc_id] = doc
 
+        # Normalize to 0-1 range
         if scores:
             max_score = max(scores.values())
-            min_score = min(scores.values())
-            score_range = max_score - min_score if max_score != min_score else 1.0
-            for doc_id in scores:
-                scores[doc_id] = (scores[doc_id] - min_score) / score_range
+            if max_score > 0:
+                for doc_id in scores:
+                    scores[doc_id] = scores[doc_id] / max_score
 
         result = []
         for doc_id, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
-            doc = docs[doc_id]
-            doc["score"] = score
+            doc = docs[doc_id].copy()
+            doc["score"] = round(score, 4)
             result.append(doc)
 
         return result

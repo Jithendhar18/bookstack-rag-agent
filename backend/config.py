@@ -42,10 +42,10 @@ class Settings(BaseSettings):
     # ─── Retrieval ────────────────────────────────────────────────────
     RETRIEVAL_MODE: str = "hybrid"  # dense | hybrid | keyword
     TOP_K_RETRIEVAL: int = 20
-    TOP_K_RERANK: int = 5
-    SIMILARITY_THRESHOLD: float = 0.3
-    DENSE_WEIGHT: float = 0.7
-    BM25_WEIGHT: float = 0.3
+    TOP_K_RERANK: int = 8
+    SIMILARITY_THRESHOLD: float = 0.4
+    DENSE_WEIGHT: float = 0.8
+    BM25_WEIGHT: float = 0.2
 
     # ─── Reranker ─────────────────────────────────────────────────────
     RERANKER_ENABLED: bool = True
@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     STREAMING_ENABLED: bool = True
     MAX_CONTEXT_TOKENS: int = 4096
     MMR_LAMBDA: float = 0.7
-    HALLUCINATION_THRESHOLD: float = 0.5
+    HALLUCINATION_THRESHOLD: float = 0.3
     MIN_SUPPORTING_CHUNKS: int = 1
     ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
 

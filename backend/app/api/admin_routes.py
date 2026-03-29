@@ -72,6 +72,20 @@ async def get_metrics(
     docs_by_book = {str(row[0]): row[1] for row in book_result}
     total_books = len(docs_by_book)
 
+    # Average query latency from audit logs
+    from sqlalchemy import cast, Float
+    try:
+        avg_latency_result = await db.execute(
+            select(func.avg(cast(AuditLog.details["latency_ms"].astext, Float))).where(
+                AuditLog.tenant_id == tenant,
+                AuditLog.action == "query",
+                AuditLog.details["latency_ms"].isnot(None),
+            )
+        )
+        avg_latency = avg_latency_result.scalar()
+    except Exception:
+        avg_latency = None
+
     return SystemMetrics(
         total_documents=total_docs,
         total_chunks=total_chunks,
@@ -81,7 +95,7 @@ async def get_metrics(
         total_books=total_books,
         documents_by_status=docs_by_status,
         documents_by_book=docs_by_book,
-        avg_query_latency_ms=None,
+        avg_query_latency_ms=round(avg_latency, 1) if avg_latency else None,
     )
 
 

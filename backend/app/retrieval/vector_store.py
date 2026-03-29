@@ -156,7 +156,10 @@ class VectorStoreManager:
         top_k: int = 10,
         tenant_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Full-text search using Qdrant's text index."""
+        """Full-text search using Qdrant's text index.
+
+        Scores results by word overlap ratio instead of returning flat 1.0.
+        """
         from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchText
 
         must_conditions = [
@@ -175,15 +178,23 @@ class VectorStoreManager:
             with_vectors=False,
         )
 
-        return [
-            {
+        # Score by word overlap ratio so keyword results have meaningful ranking
+        query_words = set(query_text.lower().split())
+        scored = []
+        for point in results[0]:
+            text = point.payload.get("text", "")
+            text_words = set(text.lower().split())
+            overlap = len(query_words & text_words)
+            score = overlap / max(len(query_words), 1)
+            scored.append({
                 "id": str(point.id),
-                "score": 1.0,
-                "text": point.payload.get("text", ""),
+                "score": min(score, 1.0),
+                "text": text,
                 "metadata": {k: v for k, v in point.payload.items() if k != "text"},
-            }
-            for point in results[0]
-        ]
+            })
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        return scored
 
     def delete_embeddings(self, ids: List[str]):
         """Remove embeddings by ID."""
