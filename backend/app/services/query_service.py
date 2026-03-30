@@ -4,6 +4,8 @@ import logging
 import uuid as uuid_module
 from typing import Optional
 from uuid import UUID
+from datetime import datetime, timedelta
+from sqlalchemy import select, func, desc, cast, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ChatSession, ChatMessage, AuditLog
@@ -159,3 +161,89 @@ class QueryService(BaseService):
         self.db.add(audit_log)
         await self.db.commit()
         return audit_log
+
+    async def delete_session(self, session_id: UUID, user_id: UUID) -> bool:
+        """
+        Delete a chat session and all its messages.
+        
+        Messages are automatically deleted via cascade delete.
+        
+        Args:
+            session_id: Chat session ID
+            user_id: User UUID (for authorization check)
+            
+        Returns:
+            True if deleted, False if not found or unauthorized
+        """
+        # Verify session belongs to user
+        session = await self.session_repo.get_by_id(session_id)
+        if session is None or session.user_id != user_id:
+            return False
+        
+        # Delete session (messages cascade delete automatically)
+        return await self.session_repo.delete(session_id)
+
+    async def get_session_by_id(
+        self, session_id: UUID, user_id: UUID
+    ) -> Optional[ChatSession]:
+        """
+        Get a chat session by ID with authorization check.
+        
+        Args:
+            session_id: Chat session ID
+            user_id: User UUID (for authorization check)
+            
+        Returns:
+            ChatSession instance if authorized, None otherwise
+        """
+        session = await self.session_repo.get_by_id(session_id)
+        if session is None or session.user_id != user_id:
+            return None
+        return session
+
+    async def get_popular_queries(
+        self, tenant_id: str, limit: int = 10, days: int = 30
+    ) -> list[dict]:
+        """
+        Get popular/trending queries.
+        
+        Args:
+            tenant_id: Tenant identifier
+            limit: Maximum number of queries to return
+            days: Number of days to look back
+            
+        Returns:
+            List of dicts with query, count, and last_asked_at
+        """
+        from sqlalchemy.dialects.postgresql import JSONB
+        
+        cutoff_date = datetime.utcnow() - timedelta(days=days)
+        
+        # Extract query text from details JSON and cast to string
+        query_text = cast(AuditLog.details["query"], String)
+        
+        result = await self.db.execute(
+            select(
+                query_text.label("query"),
+                func.count(AuditLog.id).label("count"),
+                func.max(AuditLog.created_at).label("last_asked_at"),
+            )
+            .where(
+                (AuditLog.tenant_id == tenant_id)
+                & (AuditLog.action == "query")
+                & (AuditLog.created_at >= cutoff_date)
+            )
+            .group_by(query_text)
+            .order_by(desc(func.count(AuditLog.id)))
+            .limit(limit)
+        )
+        
+        rows = result.all()
+        return [
+            {
+                "query": row.query,
+                "count": row.count,
+                "last_asked_at": row.last_asked_at,
+            }
+            for row in rows
+        ]
