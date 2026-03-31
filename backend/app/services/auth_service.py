@@ -39,13 +39,13 @@ class AuthService(BaseService):
         self.role_repo = RoleRepository(db)
 
     async def authenticate_user(
-        self, username: str, password: str
+        self, identifier: str, password: str
     ) -> tuple[User, Role]:
         """
-        Authenticate user by username and password.
+        Authenticate user by username/email and password.
         
         Args:
-            username: User's username
+            identifier: User's username or email
             password: User's password
             
         Returns:
@@ -54,7 +54,7 @@ class AuthService(BaseService):
         Raises:
             HTTPException: If credentials invalid
         """
-        user = await self.user_repo.get_active_by_username(username)
+        user = await self.user_repo.get_active_by_identifier(identifier)
 
         if user is None or not verify_password(password, user.hashed_password):
             raise HTTPException(

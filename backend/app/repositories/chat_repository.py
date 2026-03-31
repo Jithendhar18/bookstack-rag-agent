@@ -90,19 +90,23 @@ class ChatMessageRepository(BaseRepository[ChatMessage]):
         """
         Get messages in a chat session with pagination.
         
+        Fetches the most recent messages and returns them in chronological order.
+        
         Args:
             session_id: Chat session UUID
-            skip: Number of records to skip
-            limit: Maximum number of records to return
+            skip: Number of records to skip (not used, kept for API compatibility)
+            limit: Maximum number of recent messages to return
             
         Returns:
-            List of ChatMessage instances
+            List of ChatMessage instances in chronological order (oldest → newest)
         """
         result = await self.db.execute(
             select(ChatMessage)
             .where(ChatMessage.session_id == session_id)
-            .order_by(ChatMessage.created_at)
-            .offset(skip)
+            .order_by(desc(ChatMessage.created_at))
             .limit(limit)
         )
-        return result.scalars().all()
+        # Reverse to get chronological order (oldest → newest)
+        messages = result.scalars().all()
+        messages.reverse()
+        return messages

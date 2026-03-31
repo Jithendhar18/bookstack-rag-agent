@@ -3,8 +3,10 @@
 import json
 import time
 import logging
-from typing import Optional, Annotated, AsyncGenerator
+from typing import Optional, Annotated, AsyncGenerator, List
 from uuid import UUID
+
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -66,11 +68,34 @@ async def query(
     try:
         logger.info(f"Running agent query: {request.query[:100]}")
         
+        # Load prior messages from database
+        prior_messages = []
+        try:
+            prior_messages = await query_service.get_session_history(
+                session_id=session.id,
+                user_id=current_user.user_id,
+                limit=9,  # Last 9 messages (+ current query = 10 total context)
+            )
+            logger.info(f"Loaded {len(prior_messages)} prior messages for session {session.id}")
+        except Exception as e:
+            logger.warning(f"Failed to load chat history: {e}")
+            prior_messages = []
+        
+        # Convert ChatMessage DB records to LangChain message objects
+        history_messages: List[BaseMessage] = []
+        for msg in prior_messages:
+            if msg.role == "user":
+                history_messages.append(HumanMessage(content=msg.content))
+            elif msg.role == "assistant":
+                history_messages.append(AIMessage(content=msg.content))
+        
         # Run agent
         result = await run_agent_query(
             query=request.query,
             tenant_id=current_user.tenant_id,
             session_id=str(session.id),
+            user_id=current_user.user_id,
+            messages=history_messages,
         )
         
         logger.info("Agent query completed successfully")
@@ -279,6 +304,8 @@ async def stream_agent_query(
     query: str,
     tenant_id: str,
     session_id: str,
+    user_id: Optional[str] = None,
+    history_messages: Optional[List[BaseMessage]] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Stream agent query results as Server-Sent Events (SSE).
@@ -289,16 +316,23 @@ async def stream_agent_query(
         query: User query text
         tenant_id: Tenant identifier
         session_id: Chat session ID
+        user_id: User ID for context
+        history_messages: Pre-loaded chat history messages
         
     Yields:
         JSON-formatted SSE events with node updates
     """
     try:
+        # Use provided history messages or empty list
+        messages = history_messages or []
+        
         # Run agent and stream results
         result = await run_agent_query(
             query=query,
             tenant_id=tenant_id,
             session_id=session_id,
+            user_id=user_id,
+            messages=messages,
         )
         
         # Emit final result
@@ -351,11 +385,31 @@ async def query_stream(
         request.query[:100],
     )
     
+    # Load prior messages for history context
+    history_messages: List[BaseMessage] = []
+    try:
+        prior_messages = await query_service.get_session_history(
+            session_id=session.id,
+            user_id=current_user.user_id,
+            limit=9,
+        )
+        for msg in prior_messages:
+            if msg.role == "user":
+                history_messages.append(HumanMessage(content=msg.content))
+            elif msg.role == "assistant":
+                history_messages.append(AIMessage(content=msg.content))
+        logger.info(f"Loaded {len(history_messages)} prior messages for streaming session {session.id}")
+    except Exception as e:
+        logger.warning(f"Failed to load chat history for stream: {e}")
+        history_messages = []
+    
     return StreamingResponse(
         stream_agent_query(
             query=request.query,
             tenant_id=current_user.tenant_id,
             session_id=str(session.id),
+            user_id=str(current_user.user_id),
+            history_messages=history_messages,
         ),
         media_type="text/event-stream",
         headers={
