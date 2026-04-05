@@ -95,3 +95,21 @@ class UserRepository(BaseRepository[User]):
             select(User).where(User.tenant_id == tenant_id)
         )
         return result.scalars().all()
+
+    async def get_active_by_identifier(self, identifier: str) -> Optional[User]:
+        """
+        Get active user by username OR email.
+        
+        Args:
+            identifier: Username or email to search for
+            
+        Returns:
+            User instance or None if not found or not active
+        """
+        result = await self.db.execute(
+            select(User).where(
+                ((User.username == identifier) | (User.email == identifier))
+                & (User.is_active == True)
+            )
+        )
+        return result.scalar_one_or_none()

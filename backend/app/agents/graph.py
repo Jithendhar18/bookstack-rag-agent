@@ -6,8 +6,9 @@ Flow (all optional steps respect their env toggle):
 """
 
 import logging
-from typing import Dict, Any, Optional, AsyncIterator
+from typing import Dict, Any, Optional, AsyncIterator, List
 
+from langchain_core.messages import BaseMessage
 from langgraph.graph import StateGraph, END
 from langsmith import traceable
 
@@ -111,6 +112,8 @@ async def run_agent_query(
     query: str,
     tenant_id: str = "default",
     session_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    messages: Optional[List[BaseMessage]] = None,
 ) -> Dict[str, Any]:
     """Execute a query through the RAG agent pipeline with caching."""
     # Check cache first
@@ -131,7 +134,7 @@ async def run_agent_query(
         "rewritten_query": None,
         "tenant_id": tenant_id,
         "session_id": session_id,
-        "messages": [],
+        "messages": messages or [],
         "retrieved_documents": [],
         "reranked_documents": [],
         "compressed_documents": [],
@@ -170,6 +173,8 @@ async def stream_agent_query(
     query: str,
     tenant_id: str = "default",
     session_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    messages: Optional[List[BaseMessage]] = None,
 ) -> AsyncIterator[Dict[str, Any]]:
     """Stream query execution through the RAG agent, yielding node events."""
     agent = get_agent()
@@ -179,7 +184,7 @@ async def stream_agent_query(
         "rewritten_query": None,
         "tenant_id": tenant_id,
         "session_id": session_id,
-        "messages": [],
+        "messages": messages or [],
         "retrieved_documents": [],
         "reranked_documents": [],
         "compressed_documents": [],

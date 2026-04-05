@@ -65,43 +65,6 @@ class AgentNodes:
         except Exception:
             self._tokenizer = tiktoken.get_encoding("cl100k_base")
 
-    @staticmethod
-    def _is_greeting(text: str) -> bool:
-        """Fuzzy-match greetings, handles typos and variations."""
-        import difflib
-        clean = re.sub(r"[^a-z\s]", "", text.lower()).strip()
-        words = clean.split()
-
-        greetings = [
-            "hi", "hello", "hey", "yo", "sup", "hola", "howdy",
-            "hii", "hiii", "heya", "helo", "hellow",
-            "thanks", "thank you", "thankyou", "thx",
-            "ok", "okay", "bye", "goodbye", "cya",
-            "good morning", "good evening", "good afternoon", "good night",
-            "good mornign", "good mornin", "gm", "gn",
-            "whats up", "wassup", "wazzup",
-        ]
-
-        # Exact match
-        if clean in greetings:
-            return True
-
-        # Single word — fuzzy match against greeting words
-        if len(words) == 1:
-            single_greetings = [g for g in greetings if " " not in g]
-            matches = difflib.get_close_matches(clean, single_greetings, n=1, cutoff=0.7)
-            if matches:
-                return True
-
-        # Multi-word — fuzzy match the full phrase
-        if len(words) >= 2:
-            multi_greetings = [g for g in greetings if " " in g]
-            matches = difflib.get_close_matches(clean, multi_greetings, n=1, cutoff=0.65)
-            if matches:
-                return True
-
-        return False
-
     # ─── Input Node ──────────────────────────────────────────────────────
 
     @traceable(name="input_node")
@@ -110,15 +73,6 @@ class AgentNodes:
         query = state["query"].strip()
         if not query:
             return {"error": "Empty query", "answer": "Please provide a question."}
-
-        # Handle greetings and non-questions instantly (skip heavy pipeline)
-        if len(query.split()) <= 4 and self._is_greeting(query):
-            return {
-                "error": "greeting",
-                "answer": "Hello! Ask me anything about the documentation and I'll help you find answers.",
-                "sources": [],
-                "metadata": {"start_time": time.time()},
-            }
 
         # Guardrails: prompt injection check (skipped if GUARDRAILS_ENABLED=false)
         injection_check = self.guardrails.check_prompt_injection(query)
@@ -131,7 +85,7 @@ class AgentNodes:
 
         return {
             "query": query,
-            "messages": [HumanMessage(content=query)],
+            "messages": state.get("messages", []) + [HumanMessage(content=query)],
             "metadata": {
                 **state.get("metadata", {}),
                 "start_time": time.time(),

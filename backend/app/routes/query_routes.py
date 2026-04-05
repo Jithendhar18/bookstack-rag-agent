@@ -3,8 +3,10 @@
 import json
 import time
 import logging
-from typing import Optional, Annotated, AsyncGenerator
+from typing import Optional, Annotated, AsyncGenerator, List
 from uuid import UUID
+
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -66,11 +68,34 @@ async def query(
     try:
         logger.info(f"Running agent query: {request.query[:100]}")
         
+        # Load prior messages from database
+        prior_messages = []
+        try:
+            prior_messages = await query_service.get_session_history(
+                session_id=session.id,
+                user_id=current_user.user_id,
+                limit=9,  # Last 9 messages (+ current query = 10 total context)
+            )
+            logger.info(f"Loaded {len(prior_messages)} prior messages for session {session.id}")
+        except Exception as e:
+            logger.warning(f"Failed to load chat history: {e}")
+            prior_messages = []
+        
+        # Convert ChatMessage DB records to LangChain message objects
+        history_messages: List[BaseMessage] = []
+        for msg in prior_messages:
+            if msg.role == "user":
+                history_messages.append(HumanMessage(content=msg.content))
+            elif msg.role == "assistant":
+                history_messages.append(AIMessage(content=msg.content))
+        
         # Run agent
         result = await run_agent_query(
             query=request.query,
             tenant_id=current_user.tenant_id,
             session_id=str(session.id),
+            user_id=current_user.user_id,
+            messages=history_messages,
         )
         
         logger.info("Agent query completed successfully")
@@ -279,29 +304,27 @@ async def stream_agent_query(
     query: str,
     tenant_id: str,
     session_id: str,
+    user_id: Optional[str] = None,
+    history_messages: Optional[List[BaseMessage]] = None,
+    query_service: Optional[QueryService] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Stream agent query results as Server-Sent Events (SSE).
-    
-    Yields JSON events from the LangGraph agent for real-time progress.
-    
-    Args:
-        query: User query text
-        tenant_id: Tenant identifier
-        session_id: Chat session ID
-        
-    Yields:
-        JSON-formatted SSE events with node updates
+    Saves user and assistant messages to the database for history.
     """
+    start = time.time()
+
     try:
-        # Run agent and stream results
+        messages = history_messages or []
+
         result = await run_agent_query(
             query=query,
             tenant_id=tenant_id,
             session_id=session_id,
+            user_id=user_id,
+            messages=messages,
         )
-        
-        # Emit final result
+
         sources = [
             {
                 "chunk_id": s.get("chunk_id", ""),
@@ -313,10 +336,28 @@ async def stream_agent_query(
             }
             for s in result.get("sources", [])
         ]
-        
-        yield f'data: {json.dumps({"node": "response", "answer": result["answer"], "sources": sources})}\n\n'
+
+        answer = result.get("answer", "")
+        latency_ms = (time.time() - start) * 1000
+
+        # Save assistant message after generation
+        if query_service:
+            try:
+                await query_service.save_chat_message(
+                    UUID(session_id), "assistant", answer,
+                    sources=result.get("sources", []),
+                    token_count=len(answer.split()),
+                )
+                await query_service.log_query_audit(
+                    UUID(user_id) if user_id else None,
+                    tenant_id, query, latency_ms,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to save assistant message: {e}")
+
+        yield f'data: {json.dumps({"node": "response", "answer": answer, "sources": sources, "session_id": session_id, "latency_ms": round(latency_ms, 1)})}\n\n'
         yield "data: [DONE]\n\n"
-        
+
     except Exception as e:
         logger.error(f"Streaming query failed: {type(e).__name__}: {e}", exc_info=True)
         yield f'data: {json.dumps({"error": "Query processing failed"})}\n\n'
@@ -333,7 +374,7 @@ async def query_stream(
     Stream a query to the RAG agent in real-time.
     
     Returns Server-Sent Events (SSE) showing agent progress.
-    Note: Streaming queries are NOT saved to history.
+    Streaming queries are saved to history after completion.
     
     Args:
         request: QueryRequest with query text
@@ -351,11 +392,40 @@ async def query_stream(
         request.query[:100],
     )
     
+    # Load prior messages for history context
+    history_messages: List[BaseMessage] = []
+    try:
+        prior_messages = await query_service.get_session_history(
+            session_id=session.id,
+            user_id=current_user.user_id,
+            limit=9,
+        )
+        for msg in prior_messages:
+            if msg.role == "user":
+                history_messages.append(HumanMessage(content=msg.content))
+            elif msg.role == "assistant":
+                history_messages.append(AIMessage(content=msg.content))
+        logger.info(f"Loaded {len(history_messages)} prior messages for streaming session {session.id}")
+    except Exception as e:
+        logger.warning(f"Failed to load chat history for stream: {e}")
+        history_messages = []
+    
+    # Save user message before stream starts
+    try:
+        await query_service.save_chat_message(
+            session.id, "user", request.query, token_count=len(request.query.split())
+        )
+    except Exception as e:
+        logger.warning(f"Failed to pre-save user message: {e}")
+
     return StreamingResponse(
         stream_agent_query(
             query=request.query,
             tenant_id=current_user.tenant_id,
             session_id=str(session.id),
+            user_id=str(current_user.user_id),
+            history_messages=history_messages,
+            query_service=query_service,
         ),
         media_type="text/event-stream",
         headers={
@@ -369,7 +439,7 @@ async def query_stream(
 async def get_popular_queries(
     limit: int = 10,
     days: int = 30,
-    current_user: Annotated[CurrentUser, Depends(require_roles(["admin", "developer"]))] = None,
+    current_user: Annotated[CurrentUser, Depends(get_current_user)] = None,
     query_service: Annotated[QueryService, Depends(get_query_service)] = None,
 ):
     """

@@ -3,15 +3,17 @@
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.auth.dependencies import get_current_user, CurrentUser
+from app.auth.password import hash_password, verify_password
 from app.schemas.schemas import (
     LoginRequest,
     RegisterRequest,
     RefreshTokenRequest,
+    ChangePasswordRequest,
     TokenResponse,
     UserResponse,
 )
@@ -152,3 +154,47 @@ async def get_me(
         tenant_id=user.tenant_id,
         created_at=user.created_at,
     )
+
+
+@router.put("/change-password")
+async def change_password(
+    request: ChangePasswordRequest,
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+):
+    """
+    Change password for authenticated user.
+    
+    Args:
+        request: ChangePasswordRequest with current_password and new_password
+        current_user: Current user from JWT token
+        auth_service: Injected auth service
+        
+    Returns:
+        {"message": "Password changed successfully"}
+        
+    Raises:
+        HTTPException(400): If current password is incorrect
+    """
+    user = await auth_service.get_user_by_id(current_user.user_id)
+    
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+    
+    # Verify current password
+    if not verify_password(request.current_password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+    
+    # Hash and save new password
+    user.hashed_password = hash_password(request.new_password)
+    await auth_service.user_repo.update(user)
+    
+    logger.info(f"Password changed for user {user.id}")
+    
+    return {"message": "Password changed successfully"}
