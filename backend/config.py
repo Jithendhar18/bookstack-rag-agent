@@ -41,8 +41,8 @@ class Settings(BaseSettings):
 
     # ─── Retrieval ────────────────────────────────────────────────────
     RETRIEVAL_MODE: str = "hybrid"  # dense | hybrid | keyword
-    TOP_K_RETRIEVAL: int = 20
-    TOP_K_RERANK: int = 8
+    TOP_K_RETRIEVAL: int = 12
+    TOP_K_RERANK: int = 5
     SIMILARITY_THRESHOLD: float = 0.4
     DENSE_WEIGHT: float = 0.8
     BM25_WEIGHT: float = 0.2
@@ -67,13 +67,17 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     GUARDRAILS_ENABLED: bool = True
     QUERY_REWRITER_ENABLED: bool = True
+    CONDITIONAL_REWRITE_ENABLED: bool = True  # Only rewrite when initial retrieval is poor
     CONTEXT_COMPRESSION_ENABLED: bool = True
     CACHE_ENABLED: bool = True
     STREAMING_ENABLED: bool = True
-    MAX_CONTEXT_TOKENS: int = 4096
+    MAX_CONTEXT_TOKENS: int = 2000
+    MAX_CONTEXT_DOCS: int = 5
+    MIN_RETRIEVAL_RESULTS: int = 3  # Threshold to trigger conditional rewrite
     MMR_LAMBDA: float = 0.7
     HALLUCINATION_THRESHOLD: float = 0.3
     MIN_SUPPORTING_CHUNKS: int = 1
+    MIN_CHUNK_TOKENS: int = 30  # Drop chunks smaller than this
     ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}

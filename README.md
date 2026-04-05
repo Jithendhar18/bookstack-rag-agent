@@ -2,7 +2,8 @@
 
 AI-powered Q&A over your BookStack documentation using Retrieval-Augmented Generation.
 
-Built with **FastAPI**, **LangGraph**, **Qdrant**, and **PostgreSQL**.
+Built with **FastAPI**, **LangGraph**, **Qdrant**, and **PostgreSQL**.  
+React + TypeScript frontend with real-time streaming, chat sessions, and admin dashboard.
 
 ## Features
 
@@ -12,35 +13,37 @@ Built with **FastAPI**, **LangGraph**, **Qdrant**, and **PostgreSQL**.
 - **Cross-encoder reranking** — toggleable for precision vs speed
 - **Guardrails** — prompt injection detection + output grounding validation
 - **JWT auth with RBAC** — admin, developer, user roles
+- **SSE streaming** — real-time token streaming with pipeline stage indicators
 - **In-memory caching** — TTL-based query and retrieval caching
+- **Rate-limited ingestion** — handles large BookStack instances without API throttling
 
 ## Quick Start
 
 ```bash
-# 1. Start infrastructure
-docker compose up -d db qdrant
+# 1. Start everything with Docker
+docker compose up -d
 
-# 2. Configure
-cd backend
-cp .env.example .env
-# Edit .env — set BookStack credentials and LLM API key
+# 2. Configure (first time)
+cd backend && cp .env.example .env
+# Edit .env — set BOOKSTACK_BASE_URL, BOOKSTACK_TOKEN_ID/SECRET, LLM_API_KEY
 
-# 3. Install & run
-python3 -m venv venv && source venv/bin/activate
+# 3. Rebuild after config changes
+docker compose up -d --force-recreate backend
+```
+
+Or run locally:
+
+```bash
+# Backend
+cd backend && python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
-# 4. Seed database (first time)
-cd .. && python scripts/seed_db.py
+# Frontend
+cd ui-vector && pnpm install && pnpm dev
 ```
 
-Or run everything with Docker:
-
-```bash
-docker compose up -d
-```
-
-**Default admin**: admin@bookstack-rag.local / admin1234
+**Default admin login**: username `admin` / password `admin1234`
 
 ## Query Pipeline (LangGraph)
 
@@ -68,15 +71,16 @@ All settings via environment variables. See [backend/.env.example](backend/.env.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| POST | `/api/auth/login` | Login → JWT token |
-| POST | `/api/auth/register` | Register user |
-| POST | `/api/query` | RAG query |
-| POST | `/api/query/stream` | Streaming RAG query |
-| POST | `/api/ingestion/ingest` | Ingest from BookStack |
-| GET | `/api/admin/stats` | System stats (admin) |
-| GET | `/api/health` | Health check |
+| POST | `/api/v1/auth/login` | Login → JWT token |
+| POST | `/api/v1/auth/register` | Register user |
+| POST | `/api/v1/query` | RAG query (sync) |
+| POST | `/api/v1/query/stream` | Streaming RAG query (SSE) |
+| POST | `/api/v1/ingestion/ingest` | Ingest from BookStack |
+| GET | `/api/v1/ingestion/status/{task_id}` | Ingestion task status |
+| GET | `/api/v1/admin/stats` | System stats (admin) |
+| GET | `/health` | Health check |
 
-Full API docs at http://localhost:8000/docs
+Interactive API docs at http://localhost:8000/docs
 
 ## Documentation
 
@@ -84,6 +88,8 @@ Full API docs at http://localhost:8000/docs
 - [docs/architecture.md](docs/architecture.md) — System design
 - [docs/api.md](docs/api.md) — API reference
 - [docs/usage.md](docs/usage.md) — Usage guide
+- [docs/technical-review.md](docs/technical-review.md) — Design decisions and trade-offs
+- [docs/frontend-integration.md](docs/frontend-integration.md) — Frontend integration guide
 
 ## License
 

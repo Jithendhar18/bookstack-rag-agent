@@ -74,30 +74,69 @@ class GuardrailsService:
                 "reason": f"Insufficient supporting sources (need at least {settings.MIN_SUPPORTING_CHUNKS}).",
             }
 
-        # Check if key phrases from the answer appear in sources
+        # Check if the answer is grounded in source content using both
+        # unigram and bigram overlap. Bigrams catch paraphrased content where
+        # the LLM rephrases poetic/archaic source text into modern language
+        # but preserves named entities and key phrases.
         answer_lower = answer.lower()
         source_texts = " ".join(s.get("content", s.get("text", "")) for s in sources).lower()
 
-        # Extract significant words from answer (> 4 chars, not common words)
         stop_words = {"this", "that", "with", "from", "have", "been", "were", "will",
                       "would", "could", "should", "there", "their", "about", "which",
                       "when", "what", "where", "does", "also", "more", "than", "into",
-                      "most", "some", "such", "only", "very", "just", "they", "your"}
-        answer_words = set(
+                      "most", "some", "such", "only", "very", "just", "they", "your",
+                      "based", "provided", "context", "documentation", "information",
+                      "according", "following", "answer", "question"}
+
+        answer_words = [
             w for w in re.findall(r'\b[a-z]{4,}\b', answer_lower)
             if w not in stop_words
-        )
+        ]
 
         if not answer_words:
             return {"grounded": True, "confidence": 0.8, "reason": None}
 
-        matched = sum(1 for w in answer_words if w in source_texts)
-        confidence = matched / len(answer_words) if answer_words else 0
+        # Build a set of source words for efficient lookup
+        source_word_set = set(re.findall(r'\b[a-z]{3,}\b', source_texts))
+
+        # Unigram overlap — includes prefix matching for morphological variants
+        # (e.g., "ravana"/"ravan", "destroyed"/"destroying", "ancient"/"anciently")
+        unique_words = set(answer_words)
+        word_matches = 0
+        for w in unique_words:
+            if w in source_texts:
+                word_matches += 1
+            else:
+                # Prefix match: if a source word shares a stem (≥5 char prefix), count as partial match
+                prefix = w[:5] if len(w) >= 5 else w[:4]
+                if any(sw.startswith(prefix) for sw in source_word_set if len(sw) >= len(prefix)):
+                    word_matches += 0.7  # partial credit for morphological variants
+        word_confidence = word_matches / len(unique_words) if unique_words else 0
+
+        # Bigram overlap — catches phrases like "faithful wife", "demon king"
+        answer_bigrams = set(
+            f"{answer_words[i]} {answer_words[i+1]}"
+            for i in range(len(answer_words) - 1)
+        )
+        bigram_matches = sum(1 for bg in answer_bigrams if bg in source_texts) if answer_bigrams else 0
+        # Also check individual bigram words — if both words exist independently in source, partial credit
+        if answer_bigrams:
+            for bg in answer_bigrams:
+                w1, w2 = bg.split(" ", 1)
+                if bg not in source_texts and w1 in source_texts and w2 in source_texts:
+                    bigram_matches += 0.5
+        bigram_confidence = bigram_matches / len(answer_bigrams) if answer_bigrams else 0
+
+        # Combined confidence: weight unigrams more but reward bigram matches
+        confidence = 0.7 * word_confidence + 0.3 * bigram_confidence
 
         grounded = confidence >= settings.HALLUCINATION_THRESHOLD
 
         if not grounded:
-            logger.warning(f"Low grounding confidence: {confidence:.2f}")
+            logger.warning(
+                f"Low grounding confidence: {confidence:.2f} "
+                f"(words={word_confidence:.2f}, bigrams={bigram_confidence:.2f})"
+            )
 
         return {
             "grounded": grounded,

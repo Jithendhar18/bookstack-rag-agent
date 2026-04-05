@@ -20,6 +20,9 @@ def setup_logging(level: str = "INFO"):
     root_logger.setLevel(log_level)
     root_logger.handlers = [handler]
 
+    # Ensure writes reach Docker's log capture immediately
+    sys.stdout.flush()
+
     # Reduce noise from third-party loggers
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)

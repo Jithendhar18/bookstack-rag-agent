@@ -1,16 +1,36 @@
 """BookStack API client for pulling content."""
 
+import asyncio
 import logging
 import time
 from typing import Optional
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    before_sleep_log,
+    retry_if_exception,
+)
 
 from config import get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# Minimum delay between successive BookStack API requests (seconds).
+# Keeps request rate well below BookStack's default rate limit.
+_REQUEST_DELAY = 0.25
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Retry on connection errors and HTTP 429/5xx responses."""
+    if isinstance(exc, httpx.RequestError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in (429, 500, 502, 503, 504)
+    return False
 
 
 class BookStackClient:
@@ -44,8 +64,9 @@ class BookStackClient:
             await self._client.aclose()
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(min=1, max=10),
+        stop=stop_after_attempt(6),
+        wait=wait_exponential(min=2, max=60),
+        retry=retry_if_exception(_is_retryable),
         before_sleep=before_sleep_log(logger, logging.WARNING),
     )
     async def _get(self, endpoint: str, params: Optional[dict] = None) -> dict:
@@ -60,6 +81,16 @@ class BookStackClient:
         try:
             response = await client.get(url, params=params)
             elapsed = round(time.monotonic() - t0, 3)
+            # Honour Retry-After on 429 before caller sees the error
+            if response.status_code == 429:
+                retry_after = float(response.headers.get("Retry-After", _REQUEST_DELAY * 4))
+                logger.warning(
+                    "BookStack rate-limited (429) — waiting %.1fs before retry",
+                    retry_after,
+                    extra={"stage": "fetch", "url": f"{self.base_url}{url}",
+                           "retry_after": retry_after},
+                )
+                await asyncio.sleep(retry_after)
             logger.debug("BookStack API response", extra={
                 "stage": "fetch",
                 "url": f"{self.base_url}{url}",
@@ -67,6 +98,8 @@ class BookStackClient:
                 "elapsed_s": elapsed,
             })
             response.raise_for_status()
+            # Throttle to avoid triggering rate limits on subsequent calls
+            await asyncio.sleep(_REQUEST_DELAY)
             return response.json()
         except httpx.HTTPStatusError as exc:
             logger.error("BookStack API HTTP error", exc_info=True, extra={

@@ -45,7 +45,8 @@ async def health_detailed():
         from app.retrieval.vector_store import VectorStoreManager
 
         vs = VectorStoreManager()
-        checks["vector_store"] = f"ok ({vs.store_type}, {vs.count} vectors)"
+        info = vs.client.get_collection(vs.collection_name)
+        checks["vector_store"] = f"ok ({info.points_count} vectors)"
     except Exception:
         checks["vector_store"] = "unavailable"
 

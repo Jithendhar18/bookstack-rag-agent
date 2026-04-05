@@ -277,3 +277,33 @@ curl http://localhost:8000/health
 curl http://localhost:8000/health/detailed
 curl -s http://localhost:6333/health | jq .
 ```
+
+### Docker networking
+
+Docker Compose overrides `DATABASE_URL` and `QDRANT_HOST` to use internal service names (`db`, `qdrant`). The values in `.env` are only used for local (non-Docker) development.
+
+If your BookStack instance runs on the host machine (not in Docker), use `host.docker.internal` instead of `localhost` in Docker mode:
+
+```
+BOOKSTACK_BASE_URL=http://host.docker.internal:6875
+```
+
+### Ingestion rate limits
+
+BookStack enforces API rate limits. The ingestion pipeline includes built-in throttling (0.25s between requests) and retries with exponential backoff on 429 responses. A full ingestion of ~1,500 pages takes approximately 6-8 minutes.
+
+### Logs not appearing
+
+If background task logs (e.g., ingestion pipeline) don't appear in `docker compose logs`, ensure the Alembic `env.py` uses `disable_existing_loggers=False` in the `fileConfig()` call. This prevents Alembic's logging setup from silencing application loggers.
+
+## Frontend Setup
+
+The React frontend lives in the `ui-vector/` directory.
+
+```bash
+cd ui-vector
+pnpm install
+pnpm dev           # Starts on http://localhost:8080
+```
+
+The frontend expects the backend API at `http://localhost:8000/api/v1`. See [ui-vector/README.md](../ui-vector/README.md) for full details.

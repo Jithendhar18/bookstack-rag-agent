@@ -14,7 +14,8 @@ from config import get_settings
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False keeps our app's logging handlers intact
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Override sqlalchemy.url from application settings (not hardcoded alembic.ini)
 settings = get_settings()

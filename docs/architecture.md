@@ -140,38 +140,42 @@ sequenceDiagram
             LG-->>API: Error: blocked
             API-->>U: 200 {error: "blocked"}
         else Safe query
-            Note over LG: Node 2: query_rewrite
-            opt QUERY_REWRITER_ENABLED=true
-                LG->>LLM: Rewrite query for retrieval
-                LLM-->>LG: Optimized query
-            end
-
-            Note over LG: Node 3: retriever
-            LG->>EMB: embed(rewritten_query)
+            Note over LG: Node 2: retriever (original query)
+            LG->>EMB: embed(original_query)
             EMB-->>LG: Query vector
-
-            LG->>RET: retrieve(query, top_k, tenant_id)
+            LG->>RET: retrieve(query, top_k=12, tenant_id)
             RET->>QD: Dense / Keyword / Hybrid search
             QD-->>RET: Scored results
             RET-->>LG: Retrieved documents
 
+            Note over LG: Node 3: conditional query_rewrite
+            alt < MIN_RETRIEVAL_RESULTS or low scores
+                LG->>LLM: Rewrite query for retrieval
+                LLM-->>LG: Optimized query
+                Note over LG: Node 3b: re_retriever
+                LG->>RET: retrieve(rewritten_query, top_k=12)
+                RET-->>LG: New results
+            else Initial retrieval sufficient
+                Note over LG: Skip rewrite — save LLM call
+            end
+
             alt No documents found
-                LG-->>API: No relevant documents
+                LG-->>API: Fallback: no relevant documents
             else Documents found
                 Note over LG: Node 4: reranker
                 opt RERANKER_ENABLED=true
-                    LG->>RR: rerank(query, docs, top_k_rerank)
-                    RR-->>LG: Reranked documents
+                    LG->>RR: rerank(query, docs, top_k=5)
+                    RR-->>LG: Top 5 reranked documents
                 end
 
                 Note over LG: Node 5: context_compressor
                 opt CONTEXT_COMPRESSION_ENABLED=true
-                    Note over LG: Deduplicate → MMR select → Trim to token budget
+                    Note over LG: Dedup → Drop tiny chunks → MMR (max 5) → Token trim (2000)
                 end
 
                 Note over LG: Node 6: llm_reasoning
-                LG->>LLM: System prompt + numbered sources + query
-                LLM-->>LG: Generated answer + source refs
+                LG->>LLM: Strict grounding prompt + context + query
+                LLM-->>LG: Generated answer (max 3 sources)
 
                 Note over LG: Node 7: response_validator
                 opt GUARDRAILS_ENABLED=true
@@ -203,11 +207,12 @@ sequenceDiagram
 graph TD
     START(("▶ START"))
     INPUT["input<br/>━━━━━━━━━━<br/>Validate query<br/>Check prompt injection"]
-    QR["query_rewrite<br/>━━━━━━━━━━<br/>LLM rewrites query<br/>for better retrieval"]
-    RET["retriever<br/>━━━━━━━━━━<br/>Dense / Keyword / Hybrid<br/>search in Qdrant"]
-    RR["reranker<br/>━━━━━━━━━━<br/>CrossEncoder scoring<br/>or NoOp pass-through"]
-    CC["context_compressor<br/>━━━━━━━━━━<br/>Dedup → MMR → Token trim<br/>Max 10 docs"]
-    LLM["llm_reasoning<br/>━━━━━━━━━━<br/>Build prompt with sources<br/>Generate answer via LLM"]
+    RET["retriever<br/>━━━━━━━━━━<br/>Dense / Keyword / Hybrid<br/>search with ORIGINAL query"]
+    QR["query_rewrite<br/>━━━━━━━━━━<br/>CONDITIONAL: LLM rewrites<br/>only if retrieval is poor"]
+    RERET["re_retriever<br/>━━━━━━━━━━<br/>Second retrieval pass<br/>with rewritten query"]
+    RR["reranker<br/>━━━━━━━━━━<br/>CrossEncoder top-5 scoring<br/>or NoOp pass-through"]
+    CC["context_compressor<br/>━━━━━━━━━━<br/>Dedup → Drop tiny → MMR → Trim<br/>Max 5 docs · 2000 tokens"]
+    LLM["llm_reasoning<br/>━━━━━━━━━━<br/>Strict grounding prompt<br/>No hallucination allowed"]
     RV["response_validator<br/>━━━━━━━━━━<br/>Source requirement check<br/>Grounding validation"]
     RESP["response<br/>━━━━━━━━━━<br/>Compute latency<br/>Build module summary"]
     END(("⏹ END"))
@@ -215,12 +220,16 @@ graph TD
     START --> INPUT
 
     INPUT -->|"error"| RESP
-    INPUT -->|"ok"| QR
+    INPUT -->|"ok"| RET
 
-    QR --> RET
+    RET --> QR
 
-    RET -->|"no docs / error"| RESP
-    RET -->|"docs found"| RR
+    QR -->|"query changed"| RERET
+    QR -->|"query unchanged"| RR
+    QR -->|"no docs at all"| RESP
+
+    RERET -->|"docs found"| RR
+    RERET -->|"no docs"| RESP
 
     RR --> CC
     CC --> LLM
@@ -235,9 +244,11 @@ graph TD
 | From | Condition | Target |
 |---|---|---|
 | `input` | `state["error"]` is set | → `response` (short-circuit) |
-| `input` | No error | → `query_rewrite` |
-| `retriever` | No documents or error | → `response` (short-circuit) |
-| `retriever` | Documents found | → `reranker` |
+| `input` | No error | → `retriever` (original query) |
+| `query_rewrite` | Rewritten query differs from original | → `re_retriever` (second pass) |
+| `query_rewrite` | Query unchanged / rewrite skipped | → `reranker` (use existing results) |
+| `re_retriever` | No documents found | → `response` (fallback) |
+| `re_retriever` | Documents found | → `reranker` |
 
 ### Toggleable Nodes
 
@@ -245,8 +256,9 @@ graph TD
 |---|---|---|
 | `input` (guardrails) | `GUARDRAILS_ENABLED` | Skips injection check |
 | `query_rewrite` | `QUERY_REWRITER_ENABLED` | Passes original query through |
+| `query_rewrite` | `CONDITIONAL_REWRITE_ENABLED` | Always rewrites (legacy mode) |
 | `reranker` | `RERANKER_ENABLED` | Uses `NoOpReranker` (pass-through) |
-| `context_compressor` | `CONTEXT_COMPRESSION_ENABLED` | Passes reranked docs through |
+| `context_compressor` | `CONTEXT_COMPRESSION_ENABLED` | Passes reranked docs (capped at MAX_CONTEXT_DOCS) |
 | `response_validator` | `GUARDRAILS_ENABLED` | Skips grounding validation |
 
 ---

@@ -112,11 +112,37 @@ The response includes the answer and source links:
 curl -X POST http://localhost:8000/api/v1/query/stream \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"query": "How do I set up authentication?"}' \
+  -d '{"query": "How do I set up authentication?", "session_id": "optional-uuid"}' \
   --no-buffer
 ```
 
-Events are emitted per pipeline node (`input`, `retriever`, `reranker`, `llm_reasoning`, `response`). The answer and sources appear in the `llm_reasoning` event. Streaming does **not** save messages to chat history.
+The response uses Server-Sent Events (SSE). Each event is a JSON object with a `node` field indicating the pipeline stage:
+
+```
+data: {"node": "input"}
+data: {"node": "query_rewrite"}
+data: {"node": "retriever"}
+data: {"node": "reranker"}
+data: {"node": "context_compressor"}
+data: {"node": "llm_reasoning", "answer": "Authentication is configured by...", "sources": [...]}
+data: {"node": "response_validator"}
+data: {"node": "response", "session_id": "933d92b1-xxxx", "latency_ms": 2340.5}
+```
+
+Pipeline node labels for UI display:
+
+| Node | Display Label |
+|---|---|
+| `input` | Processing... |
+| `query_rewrite` | Optimizing query... |
+| `retriever` | Searching documents... |
+| `reranker` | Ranking results... |
+| `context_compressor` | Preparing context... |
+| `llm_reasoning` | Generating answer... |
+| `response_validator` | Checking answer... |
+| `response` | Finalizing... |
+
+The `session_id` in the final event links this query to a chat session for history tracking.
 
 ## Chat History
 
