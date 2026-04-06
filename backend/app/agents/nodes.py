@@ -475,11 +475,7 @@ class AgentNodes:
 
         context = "\n\n---\n\n".join(context_parts)
 
-        # All compressed docs passed the retrieval + reranking quality bar — include
-        # all of them as sources. Cap at 3 for display, sorted by score descending.
-        # We no longer filter by display score because min-max normalization can
-        # map legitimate results to low values (e.g., all-negative reranker logits).
-        sources = sorted(sources, key=lambda s: s["score"], reverse=True)[:3]
+        sources = sorted(sources, key=lambda s: s["score"], reverse=True)
 
         system_msg = SystemMessage(content=SYSTEM_PROMPT.format(context=context))
 
@@ -492,24 +488,99 @@ class AgentNodes:
             logger.error(f"LLM failed ({llm.model_name}): {e}")
             return {
                 "answer": "I'm temporarily unable to generate a response. Please try again later.",
-                "sources": sources,
+                "sources": sources[:1],
                 "metadata": {
                     **state.get("metadata", {}),
                     "llm_error": str(e),
                 },
             }
 
+        # Filter sources to only those whose content actually contributed to the answer.
+        # This prevents returning irrelevant documents that survived the pipeline
+        # but were not used by the LLM.
+        validated_sources = self._validate_sources_against_answer(
+            response.content, sources
+        )
+
         return {
             "answer": response.content,
-            "sources": sources,
+            "sources": validated_sources,
             "messages": [AIMessage(content=response.content)],
             "metadata": {
                 **state.get("metadata", {}),
                 "end_time": time.time(),
                 "documents_used": len(documents),
+                "sources_before_validation": len(sources),
+                "sources_after_validation": len(validated_sources),
                 "llm_provider": llm.model_name,
             },
         }
+
+    # ─── Source validation ────────────────────────────────────────────────
+
+    def _validate_sources_against_answer(
+        self, answer: str, sources: List[dict], max_sources: int = 3
+    ) -> List[dict]:
+        """Keep only sources whose content has meaningful overlap with the answer.
+
+        Extracts significant words (4+ chars) from the answer and checks what
+        fraction appear in each source's text. Sources below a minimum overlap
+        threshold are dropped. Always returns at least the single best source
+        when the answer is non-empty, to avoid returning zero attributions.
+        """
+        if not sources or not answer:
+            return []
+
+        # Check if the LLM said it couldn't find information — no sources needed
+        answer_lower = answer.lower()
+        for pattern in _LLM_NO_INFO_PATTERNS:
+            if re.search(pattern, answer_lower):
+                return []
+
+        # Build the set of significant words from the answer
+        # (skip short/common words to reduce false positives)
+        _STOP_WORDS = {
+            "the", "and", "for", "that", "this", "with", "from", "are", "was",
+            "were", "been", "have", "has", "had", "will", "would", "could",
+            "should", "may", "might", "can", "does", "did", "not", "but",
+            "also", "more", "most", "some", "such", "than", "then", "them",
+            "they", "their", "there", "these", "those", "which", "what",
+            "when", "where", "who", "how", "all", "each", "every", "both",
+            "into", "over", "your", "about", "between", "through", "after",
+            "before", "other", "only", "very", "just", "being", "here",
+            "using", "used", "based", "well", "like",
+        }
+        answer_words = {
+            w for w in re.findall(r"[a-z]{4,}", answer_lower)
+            if w not in _STOP_WORDS
+        }
+
+        if not answer_words:
+            # Very short answer — return best source by score
+            return sources[:1]
+
+        min_overlap = 0.12  # At least 12% of answer words must appear in source
+
+        scored: List[tuple[float, dict]] = []
+        for src in sources:
+            src_text = (src.get("content", "") + " " + src.get("document_title", "")).lower()
+            src_words = set(re.findall(r"[a-z]{4,}", src_text))
+            overlap = len(answer_words & src_words) / len(answer_words)
+            if overlap >= min_overlap:
+                scored.append((overlap, src))
+
+        # Sort by overlap (descending), then by retrieval score as tiebreaker
+        scored.sort(key=lambda x: (x[0], x[1].get("score", 0)), reverse=True)
+        validated = [s for _, s in scored[:max_sources]]
+
+        # Always return at least the top source so we never have zero attribution
+        if not validated and sources:
+            validated = [sources[0]]
+
+        logger.info(
+            f"Source validation: {len(sources)} candidates → {len(validated)} validated"
+        )
+        return validated
 
     # ─── Score helpers ───────────────────────────────────────────────────
 
