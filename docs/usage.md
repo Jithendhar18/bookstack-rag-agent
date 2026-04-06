@@ -34,8 +34,16 @@ TOKEN=$(curl -s http://localhost:8000/api/v1/auth/login \
 
 ### 3. Trigger ingestion
 
+The pipeline runs in three modes depending on the request:
+
+| Mode | When | BookStack API calls |
+|------|------|---------------------|
+| **Incremental** (default) | Prior ingestion exists | Only pages with `updated_at ≥ last_ingestion − 20 min` |
+| **Full scan** | First ever ingestion (no DB records) | All pages |
+| **Force reindex** | `force_reindex: true` | All pages, re-embeds regardless of content hash |
+
 ```bash
-# Ingest all pages
+# Incremental update — fetches only pages changed since last run (with 20-min overlap)
 curl -X POST http://localhost:8000/api/v1/ingestion/ingest \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
@@ -47,7 +55,7 @@ curl -X POST http://localhost:8000/api/v1/ingestion/ingest \
   -H "Content-Type: application/json" \
   -d '{"bookstack_type": "pages", "bookstack_ids": [1, 5, 10]}'
 
-# Force re-embed all pages (ignores content hash)
+# Force re-embed all pages (ignores content hash, full scan)
 curl -X POST http://localhost:8000/api/v1/ingestion/ingest \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \

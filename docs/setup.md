@@ -288,9 +288,17 @@ If your BookStack instance runs on the host machine (not in Docker), use `host.d
 BOOKSTACK_BASE_URL=http://host.docker.internal:6875
 ```
 
+### Ingestion modes
+
+The pipeline automatically selects the most efficient mode:
+
+- **Incremental (default):** On every run after the first, the pipeline queries `max(ingested_at)` from PostgreSQL, subtracts a 20-minute overlap window, and calls `GET /api/pages?filter[updated_at:gte]=<timestamp>`. Only pages changed since the last run are fetched and re-embedded. A typical run with no changes completes in seconds.
+- **Full scan (first run):** When the database has no previously ingested documents, a full scan is performed automatically.
+- **Force reindex:** Pass `"force_reindex": true` to bypass both the incremental filter and the content-hash check — useful after changing the embedding model or chunk size.
+
 ### Ingestion rate limits
 
-BookStack enforces API rate limits. The ingestion pipeline includes built-in throttling (0.25s between requests) and retries with exponential backoff on 429 responses. A full ingestion of ~1,500 pages takes approximately 6-8 minutes.
+BookStack enforces API rate limits. The pipeline includes built-in throttling (0.25s between requests) and retries with exponential backoff on 429 responses. A full scan of ~1,500 pages takes approximately 6-8 minutes. Incremental runs take seconds to a few minutes depending on how many pages changed.
 
 ### Logs not appearing
 

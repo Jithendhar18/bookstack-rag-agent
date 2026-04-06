@@ -3,10 +3,10 @@
 import logging
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Document, Chunk, EmbeddingMetadata
@@ -57,12 +57,37 @@ class IngestionPipeline:
                 pages = [{"id": pid} for pid in page_ids]
                 logger.info("Using provided page IDs", extra={**_ctx, "stage": "fetch",
                             "page_count": len(pages), "page_ids": page_ids})
-            else:
-                logger.info("Fetching all pages from BookStack", extra={**_ctx, "stage": "fetch"})
+            elif force_reindex:
+                logger.info("Force-reindex — fetching all pages", extra={**_ctx, "stage": "fetch"})
                 pages = await self.client.get_all_pages()
                 logger.info("BookStack pages fetched", extra={**_ctx, "stage": "fetch",
                             "page_count": len(pages),
                             "elapsed_s": round(time.monotonic() - fetch_start, 2)})
+            else:
+                last_ingestion = await self._get_last_ingestion_time(tenant_id)
+                if last_ingestion is not None:
+                    since = last_ingestion - timedelta(minutes=20)
+                    logger.info(
+                        "Incremental ingestion — fetching pages updated since %s "
+                        "(last ingestion: %s, 20-min overlap applied)",
+                        since.isoformat(), last_ingestion.isoformat(),
+                        extra={**_ctx, "stage": "fetch",
+                               "since": since.isoformat(),
+                               "last_ingestion": last_ingestion.isoformat()},
+                    )
+                    pages = await self.client.get_pages_updated_since(since)
+                    logger.info("Incremental pages fetched", extra={**_ctx, "stage": "fetch",
+                                "page_count": len(pages),
+                                "elapsed_s": round(time.monotonic() - fetch_start, 2)})
+                else:
+                    logger.info(
+                        "No prior ingestion found — full scan on first run",
+                        extra={**_ctx, "stage": "fetch"},
+                    )
+                    pages = await self.client.get_all_pages()
+                    logger.info("BookStack pages fetched", extra={**_ctx, "stage": "fetch",
+                                "page_count": len(pages),
+                                "elapsed_s": round(time.monotonic() - fetch_start, 2)})
         except Exception as exc:
             logger.error("Failed to fetch pages from BookStack", exc_info=True, extra={
                 **_ctx, "stage": "fetch", "error": str(exc)})
@@ -392,6 +417,16 @@ class IngestionPipeline:
         self.db.add(doc)
         await self.db.flush()
         return doc
+
+    async def _get_last_ingestion_time(self, tenant_id: str) -> Optional[datetime]:
+        """Return the most recent ingested_at timestamp for this tenant, or None."""
+        result = await self.db.execute(
+            select(func.max(Document.ingested_at)).where(
+                Document.tenant_id == tenant_id,
+                Document.ingested_at.isnot(None),
+            )
+        )
+        return result.scalar()
 
     async def _delete_document_data(self, doc: Document):
         """Delete chunks and vector store entries for a document."""

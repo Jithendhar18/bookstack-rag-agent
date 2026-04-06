@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from datetime import datetime
 from typing import Optional
 
 import httpx
@@ -184,6 +185,36 @@ class BookStackClient:
 
         logger.info("All BookStack pages fetched", extra={
             "stage": "fetch",
+            "total_pages": len(all_pages),
+        })
+        return all_pages
+
+    async def get_pages_updated_since(self, since: datetime) -> list[dict]:
+        """Return all pages with updated_at >= *since*, using BookStack filter API.
+
+        BookStack filter param: filter[updated_at:gte]=YYYY-MM-DD HH:MM:SS
+        The 20-minute overlap is already baked into *since* by the caller.
+        """
+        since_str = since.strftime("%Y-%m-%d %H:%M:%S")
+        all_pages: list[dict] = []
+        offset = 0
+        while True:
+            result = await self._get("pages", params={
+                "filter[updated_at:gte]": since_str,
+                "offset": offset,
+                "count": 100,
+            })
+            data = result.get("data", [])
+            if not data:
+                break
+            all_pages.extend(data)
+            if len(data) < 100:
+                break
+            offset += 100
+
+        logger.info("Incremental page list fetched", extra={
+            "stage": "fetch",
+            "since": since_str,
             "total_pages": len(all_pages),
         })
         return all_pages

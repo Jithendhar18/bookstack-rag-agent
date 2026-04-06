@@ -72,8 +72,9 @@ pnpm dev
 1. Navigate to the **Ingestion** page.
 2. If data isn't loaded, click **Start Ingestion** (or show it was already run).
 3. Show the progress/status: shelves → books → chapters → pages.
-4. Switch to Qdrant dashboard → show the collection now has vectors.
-5. **Talking point:** "Walks the full BookStack hierarchy via REST API with 0.25s rate limiting and exponential retry. Pages are chunked using recursive text splitting (1000 chars, 200 overlap), embedded with a local BGE model, and upserted into Qdrant with content-hash deduplication — unchanged pages are skipped."
+4. Run it a **second time** to show incremental mode — it completes in seconds with 0 pages processed.
+5. Switch to Qdrant dashboard → show the collection has vectors.
+6. **Talking point:** "First run does a full scan. Subsequent runs are incremental — the pipeline queries the DB for the last ingestion timestamp, subtracts 20 minutes as a safety overlap, and asks BookStack for only pages updated since then. 1500-page ingestion goes from 6-8 minutes down to seconds when nothing changed."
 
 ### Act 3: Query / RAG Pipeline — The Core (3-4 min)
 
@@ -269,17 +270,18 @@ LCEL chains are linear — they can't branch. A plain LangChain `RetrievalQA` ch
 
 **Answer:**
 
-1. **Admin triggers ingestion** via UI or `POST /api/v1/ingestion/run`.
-2. **BookStack client** walks the hierarchy: Shelves → Books → Chapters → Pages via REST API.
-   - Rate-limited: 0.25s delay between requests to respect BookStack API limits.
-   - Retry logic: 6 attempts with exponential backoff (2-60s) + Retry-After header support.
-3. **Content-hash deduplication** — SHA-256 hash of each page's content compared against stored hashes. Unchanged pages are **skipped** (saves embedding compute + Qdrant writes).
-4. **Chunking** — Changed/new pages are split using `RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)`.
-5. **Embedding** — Each chunk is encoded using BGE-base-en-v1.5 locally. Both dense (768-dim float) and sparse vectors are generated.
-6. **Qdrant upsert** — Vectors stored with metadata payload: `page_id`, `page_title`, `book_title`, `shelf_title`, `bookstack_url`, `content_hash`.
-7. **PostgreSQL log** — Ingestion result (pages processed, skipped, failed) recorded in `ingestion_logs` table.
+1. **Admin triggers ingestion** via UI or `POST /api/v1/ingestion/ingest`.
+2. **Mode selection:**
+   - *Incremental (default):* Queries `max(Document.ingested_at)` from PostgreSQL, subtracts 20-minute overlap → calls `GET /api/pages?filter[updated_at:gte]=<timestamp>`. Fetches only changed pages.
+   - *First run / force reindex:* Full scan of all pages via paginated `GET /api/pages`.
+3. **BookStack client** rate-limited: 0.25s delay, 6 retries with exponential backoff (2-60s), Retry-After header support.
+4. **Content-hash deduplication** — SHA-256 hash of each page's content compared against stored hashes. Unchanged pages are **skipped** (saves embedding compute + Qdrant writes).
+5. **Chunking** — Changed/new pages are split using `RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)`.
+6. **Embedding** — Each chunk is encoded using BGE-base-en-v1.5 locally. Both dense (768-dim float) and sparse vectors are generated.
+7. **Qdrant upsert** — Vectors stored with metadata payload: `page_id`, `page_title`, `book_title`, `shelf_title`, `bookstack_url`, `content_hash`.
+8. **PostgreSQL log** — Ingestion result (pages processed, skipped, failed) recorded in `ingestion_logs` table.
 
-**Performance:** ~1500 pages in 6-8 minutes (including rate limiting). Without rate limiting, ~2-3 minutes.
+**Performance:** First run (full scan): ~1500 pages in 6-8 minutes. Incremental run (nothing changed): <30 seconds. Incremental run (10 changed pages): ~30-60 seconds.
 
 ---
 
@@ -366,9 +368,10 @@ LCEL chains are linear — they can't branch. A plain LangChain `RetrievalQA` ch
 | Chunking speed | ~1ms/page | RecursiveCharacterTextSplitter |
 | Embedding speed | ~5ms/chunk | BGE-base on CPU |
 | Qdrant upsert | ~2ms/chunk | Single vectors |
-| Total for 1500 pages | 6-8 minutes | With rate limiting |
-| Skip rate (re-ingestion) | ~95-100% | Content-hash dedup |
-| Re-ingestion (unchanged) | <30 seconds | Only hash comparison |
+| **First run / force reindex** | **6-8 minutes** | Full scan of ~1500 pages |
+| **Incremental (nothing changed)** | **<30 seconds** | BookStack filter API + hash check |
+| **Incremental (10 changed pages)** | **~30-60 seconds** | Only changed pages fetched + embedded |
+| Skip rate (incremental, quiet day) | ~99%+ | Incremental filter + content-hash dedup |
 
 ### Cost Analysis
 
